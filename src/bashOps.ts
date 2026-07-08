@@ -20,6 +20,12 @@ export interface BashResult {
 
 const SAFE_ALLOWED_PREFIXES = [
   "pwd",
+  "cd",
+  "dir",
+  "where",
+  "Get-Location",
+  "Get-ChildItem",
+  "gci",
   "ls",
   "find",
   "git status",
@@ -70,14 +76,37 @@ const SAFE_ALLOWED_PREFIXES = [
 
 const SAFE_BLOCKED_PATTERNS = [
   /(^|\s)rm\s+/,
+  /(^|\s)del\s+/i,
+  /(^|\s)erase\s+/i,
   /(^|\s)mv\s+/,
+  /(^|\s)move\s+/i,
+  /(^|\s)ren\s+/i,
+  /(^|\s)rename\s+/i,
   /(^|\s)cp\s+/,
+  /(^|\s)copy\s+/i,
+  /(^|\s)xcopy\s+/i,
+  /(^|\s)robocopy\s+/i,
+  /(^|\s)rd\s+/i,
+  /(^|\s)rmdir\s+/i,
   /(^|\s)dd\s+/,
   /(^|\s)sudo\s+/,
   /(^|\s)chmod\s+/,
   /(^|\s)chown\s+/,
   /(^|\s)kill\s+/,
+  /(^|\s)taskkill\s+/i,
   /(^|\s)pkill\s+/,
+  /(^|\s)Stop-Process\b/i,
+  /(^|\s)Remove-Item\b/i,
+  /(^|\s)Set-Content\b/i,
+  /(^|\s)Add-Content\b/i,
+  /(^|\s)Out-File\b/i,
+  /(^|\s)New-Item\b/i,
+  /(^|\s)Copy-Item\b/i,
+  /(^|\s)Move-Item\b/i,
+  /(^|\s)Rename-Item\b/i,
+  /(^|\s)reg\s+/i,
+  /(^|\s)regedit\s+/i,
+  /(^|\s)schtasks\s+/i,
   /(^|\s)curl\s+/,
   /(^|\s)wget\s+/,
   /(^|\s)ssh\s+/,
@@ -95,6 +124,8 @@ const SAFE_BLOCKED_PATTERNS = [
   /(^|\s)--no-index\b/,
   /(^|\s)--fix\b/,
   /(^|\s)(\/|~(?:\/|\s|$))/,
+  /(^|\s)[A-Za-z]:[\\/]/,
+  /%[A-Za-z_][A-Za-z0-9_]*%/,
   /(^|\s)\.\.(?:\/|\s|$)/,
   /\$/,
   /(^|[\s:])(?:\.env(?:[./\s:]|$)|\.git(?:[\/\s:]|$)|node_modules(?:[\/\s:]|$)|\.ssh(?:[\/\s:]|$)|id_rsa(?:[.\s:]|$)|id_ed25519(?:[.\s:]|$)|[^\s:]*\.(?:pem|key)(?:[\s:]|$))/,
@@ -119,12 +150,13 @@ function compact(command: string): string {
 
 function startsWithAllowedPrefix(command: string): boolean {
   const normalized = compact(command);
-  return isAllowedPackageScript(normalized) || SAFE_ALLOWED_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix} `));
+  const lower = normalized.toLowerCase();
+  return isAllowedPackageScript(normalized) || SAFE_ALLOWED_PREFIXES.some((prefix) => lower === prefix.toLowerCase() || lower.startsWith(`${prefix.toLowerCase()} `));
 }
 
 function isAllowedPackageScript(command: string): boolean {
   const packageScriptPattern =
-    /^(?:npm|pnpm|yarn|bun)\s+run\s+(?:test|typecheck|lint|build|check)(?::[A-Za-z0-9._-]+)*(?:\s+--\s+[A-Za-z0-9._:= -]+)?$/;
+    /^(?:npm|pnpm|yarn|bun)\s+run\s+(?:test|typecheck|lint|build|check)(?::[A-Za-z0-9._-]+)*(?:\s+--\s+[A-Za-z0-9._:= -]+)?$/i;
   return packageScriptPattern.test(command);
 }
 
@@ -177,6 +209,19 @@ function makeEnv(config: CodexProConfig): NodeJS.ProcessEnv {
   if (config.inheritEnv) {
     return { ...process.env, NO_COLOR: "1", CI: process.env.CI ?? "1" };
   }
+  if (process.platform === "win32") {
+    return {
+      PATH: process.env.PATH ?? process.env.Path ?? "",
+      Path: process.env.Path ?? process.env.PATH ?? "",
+      SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
+      ComSpec: process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe",
+      TEMP: process.env.TEMP ?? "",
+      TMP: process.env.TMP ?? "",
+      USERPROFILE: process.env.USERPROFILE ?? "",
+      NO_COLOR: "1",
+      CI: "1"
+    };
+  }
   return {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: process.env.HOME ?? "",
@@ -191,6 +236,20 @@ function makeEnv(config: CodexProConfig): NodeJS.ProcessEnv {
 
 function bashExecutable(): string {
   return fs.existsSync("/bin/bash") ? "/bin/bash" : "bash";
+}
+
+function commandShellInvocation(config: CodexProConfig, command: string): { command: string; args: string[] } {
+  const shell = config.commandShell === "auto" && process.platform === "win32" ? "cmd" : config.commandShell;
+  if (shell === "cmd") {
+    return { command: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", command] };
+  }
+  if (shell === "powershell") {
+    return { command: "powershell.exe", args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command] };
+  }
+  if (shell === "pwsh") {
+    return { command: "pwsh", args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command] };
+  }
+  return { command: bashExecutable(), args: ["-lc", command] };
 }
 
 function trimOutput(value: string, maxBytes: number): { value: string; truncated: boolean } {
@@ -216,7 +275,8 @@ export async function runBash(
   const start = Date.now();
 
   return new Promise((resolve, reject) => {
-    const child = spawn(bashExecutable(), ["-lc", command], {
+    const invocation = commandShellInvocation(config, command);
+    const child = spawn(invocation.command, invocation.args, {
       cwd,
       env: makeEnv(config),
       stdio: ["ignore", "pipe", "pipe"]

@@ -50,6 +50,7 @@ function copyCommand(title: string, description: string, command: string, displa
 const TUNNELS = ["cloudflare", "ngrok", "cloudflare-named", "tailscale", "none"] as const;
 const MODES = ["agent", "handoff", "pro"] as const;
 const BASH_MODES = ["safe", "off", "full"] as const;
+const SHELLS = ["auto", "bash", "cmd", "powershell", "pwsh"] as const;
 const BASH_TRANSCRIPTS = ["compact", "full"] as const;
 const CODEX_SESSIONS = ["off", "metadata", "read"] as const;
 const WRITE_MODES = ["workspace", "handoff", "off"] as const;
@@ -64,6 +65,7 @@ const AdminProfilePatch = z.object({
   port: z.coerce.number().int().min(1).max(65535).optional(),
   mode: z.enum(MODES).optional(),
   bash: z.enum(BASH_MODES).optional(),
+  shell: z.enum(SHELLS).optional(),
   bashTranscript: z.enum(BASH_TRANSCRIPTS).optional(),
   codexSessions: z.enum(CODEX_SESSIONS).optional(),
   codexDir: textField(4096),
@@ -95,6 +97,7 @@ interface ProfileFormValues {
   cloudflareConfig: string;
   cloudflareTokenFile: string;
   bash: "off" | "safe" | "full";
+  shell: "auto" | "bash" | "cmd" | "powershell" | "pwsh";
   bashTranscript: "compact" | "full";
   codexSessions: "off" | "metadata" | "read";
   codexDir: string;
@@ -172,6 +175,7 @@ function profileValues(config: CodexProConfig, profile = readWorkspaceProfile(co
     cloudflareConfig: String(profile.cloudflareConfig ?? ""),
     cloudflareTokenFile: String(profile.cloudflareTokenFile ?? ""),
     bash: oneOf(profile.bash ?? config.bashMode, BASH_MODES, config.bashMode),
+    shell: oneOf(profile.shell ?? config.commandShell, SHELLS, config.commandShell),
     bashTranscript: oneOf(profile.bashTranscript ?? config.bashTranscript, BASH_TRANSCRIPTS, config.bashTranscript),
     codexSessions: oneOf(profile.codexSessions ?? config.codexSessions, CODEX_SESSIONS, config.codexSessions),
     codexDir: String(profile.codexDir ?? config.codexDir),
@@ -197,6 +201,11 @@ const OPTION_LABELS: Record<string, string> = {
   safe: "Safe",
   off: "Off",
   full: "Full",
+  auto: "Auto",
+  bash: "Bash",
+  cmd: "cmd.exe",
+  powershell: "Windows PowerShell",
+  pwsh: "PowerShell Core",
   compact: "Compact",
   metadata: "Metadata",
   read: "Read",
@@ -302,6 +311,7 @@ function profileForm(config: CodexProConfig): string {
           <p>Save the default access level for the next launch. These settings do not mutate the process that is already running.</p>
           <div class="form-grid">
             <label><span>Bash</span><select name="bash">${selectOptions(BASH_MODES, values.bash)}</select></label>
+            <label><span>Shell</span><select name="shell">${selectOptions(SHELLS, values.shell)}</select></label>
             <label><span>Write mode</span><select name="write">${selectOptions(WRITE_MODES, values.write)}</select></label>
             <label><span>Tool mode</span><select name="toolMode">${selectOptions(TOOL_MODES, values.toolMode)}</select></label>
             <label><span>Codex sessions</span><select name="codexSessions">${selectOptions(CODEX_SESSIONS, values.codexSessions)}</select></label>
@@ -315,6 +325,7 @@ function profileForm(config: CodexProConfig): string {
           <legend>Read-only this run</legend>
           <div class="readonly-grid">
             <div><span>Bash transcript</span><code>${escapeHtml(values.bashTranscript)}</code></div>
+            <div><span>Shell</span><code>${escapeHtml(values.shell)}</code></div>
             <div><span>Widget origin</span><code>${escapeHtml(values.widgetDomain)}</code></div>
           </div>
         </fieldset>
@@ -365,6 +376,7 @@ function buildProfilePayload(config: CodexProConfig, existing: WorkspaceProfile,
     ...(token ? { token } : {}),
     ...(cloudflareToken ? { cloudflareToken } : {}),
     bash: next.bash,
+    ...(next.shell !== "auto" ? { shell: next.shell } : {}),
     ...(next.bashTranscript !== "compact" ? { bashTranscript: next.bashTranscript } : {}),
     ...(next.codexSessions !== "off" ? { codexSessions: next.codexSessions } : {}),
     ...(next.codexDir ? { codexDir: next.codexDir } : {}),
@@ -392,6 +404,7 @@ function profileResponse(config: CodexProConfig): Record<string, unknown> {
       defaultRoot: config.defaultRoot,
       port: config.port,
       bashMode: config.bashMode,
+      commandShell: config.commandShell,
       bashTranscript: config.bashTranscript,
       codexSessions: config.codexSessions,
       writeMode: config.writeMode,

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 export type BashMode = "off" | "safe" | "full";
+export type CommandShell = "auto" | "bash" | "cmd" | "powershell" | "pwsh";
 export type BashTranscriptMode = "compact" | "full";
 export type CodexSessionsMode = "off" | "metadata" | "read";
 export type WriteMode = "off" | "handoff" | "workspace";
@@ -17,6 +18,7 @@ export interface CodexProConfig {
   authToken?: string;
   requireHttpToken: boolean;
   bashMode: BashMode;
+  commandShell: CommandShell;
   bashTranscript: BashTranscriptMode;
   bashSessionId?: string;
   requireBashSession: boolean;
@@ -152,6 +154,12 @@ function bashModeFrom(value: string | undefined): BashMode {
   return "safe";
 }
 
+function commandShellFrom(value: string | undefined): CommandShell {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "bash" || normalized === "cmd" || normalized === "powershell" || normalized === "pwsh") return normalized;
+  return "auto";
+}
+
 function bashTranscriptFrom(value: string | undefined): BashTranscriptMode {
   if (value === "compact" || value === "full") return value;
   return "compact";
@@ -258,6 +266,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
   const portArg = typeof args.port === "string" ? args.port : undefined;
   const hostArg = typeof args.host === "string" ? args.host : undefined;
   const bashArg = typeof args.bash === "string" ? args.bash : undefined;
+  const shellArg = typeof args.shell === "string" ? args.shell : undefined;
   const bashTranscriptArg = typeof args["bash-transcript"] === "string" ? args["bash-transcript"] : undefined;
   const bashSessionArg = typeof args["bash-session"] === "string" ? args["bash-session"] : undefined;
   const codexSessionsArg = typeof args["codex-sessions"] === "string" ? args["codex-sessions"] : undefined;
@@ -301,6 +310,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     authToken,
     requireHttpToken,
     bashMode: bashModeFrom(bashArg ?? process.env.CODEXPRO_BASH_MODE),
+    commandShell: commandShellFrom(shellArg ?? process.env.CODEXPRO_SHELL ?? process.env.CODEXPRO_COMMAND_SHELL),
     bashTranscript: bashTranscriptFrom(bashTranscriptArg ?? process.env.CODEXPRO_BASH_TRANSCRIPT),
     bashSessionId,
     requireBashSession,

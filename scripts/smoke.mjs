@@ -561,7 +561,9 @@ const codexContext = await client.request('tools/call', { name: 'codex_context',
 if (!codexContext.structuredContent.agents_files.includes('AGENTS.md')) throw new Error('codex_context did not include AGENTS.md');
 if (codexContext.structuredContent.agents_files.length !== 1) throw new Error(`codex_context returned duplicate AGENTS files: ${codexContext.structuredContent.agents_files.join(', ')}`);
 if (!codexContext.content?.[0]?.text?.includes('Smoke Agents')) throw new Error('codex_context did not include AGENTS.md content');
-const pwdBash = await client.request('tools/call', { name: 'bash', arguments: { workspace_id: ws, command: 'pwd' } });
+const defaultPwdCommand = process.platform === 'win32' ? 'cd' : 'pwd';
+const defaultBlockedEnvCommand = process.platform === 'win32' ? 'echo %USERPROFILE%' : 'ls $HOME';
+const pwdBash = await client.request('tools/call', { name: 'bash', arguments: { workspace_id: ws, command: defaultPwdCommand } });
 const pwdBashText = pwdBash.content?.[0]?.text ?? '';
 if (!pwdBashText.includes('Exit: 0') || pwdBashText.includes('## stdout') || pwdBashText.includes('## stderr')) {
   throw new Error(`default bash transcript should be compact: ${pwdBashText}`);
@@ -572,7 +574,36 @@ if (!pwdBash.structuredContent.stdout?.includes(tmp)) {
 await expectToolError('bash', { workspace_id: ws, command: 'find /tmp' }, /blocked/i);
 await expectToolError('bash', { workspace_id: ws, command: 'find . -fprint leaked.txt' }, /blocked/i);
 await expectToolError('bash', { workspace_id: ws, command: 'git show HEAD:.env' }, /blocked/i);
-await expectToolError('bash', { workspace_id: ws, command: 'ls $HOME' }, /blocked/i);
+await expectToolError('bash', { workspace_id: ws, command: defaultBlockedEnvCommand }, /blocked/i);
+if (process.platform === 'win32') {
+  const powershellClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'safe', '--shell', 'powershell'], {
+    initializeParams: {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'codexpro-powershell-smoke', version: '0.1.0' }
+    }
+  });
+  const powershellPwd = await powershellClient.request('tools/call', { name: 'bash', arguments: { command: 'Get-Location' } });
+  if (powershellPwd.structuredContent.exitCode !== 0 || !powershellPwd.structuredContent.stdout?.includes(tmp)) {
+    throw new Error(`powershell shell did not run Get-Location: ${JSON.stringify(powershellPwd.structuredContent)}`);
+  }
+  await expectToolError('bash', { command: 'Write-Output $HOME' }, /blocked/i, powershellClient);
+  powershellClient.close();
+
+  const cmdClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'safe', '--shell', 'cmd'], {
+    initializeParams: {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'codexpro-cmd-smoke', version: '0.1.0' }
+    }
+  });
+  const cmdPwd = await cmdClient.request('tools/call', { name: 'bash', arguments: { command: 'cd' } });
+  if (cmdPwd.structuredContent.exitCode !== 0 || !cmdPwd.structuredContent.stdout?.toLowerCase().includes(tmp.toLowerCase())) {
+    throw new Error(`cmd shell did not run cd: ${JSON.stringify(cmdPwd.structuredContent)}`);
+  }
+  await expectToolError('bash', { command: 'echo %USERPROFILE%' }, /blocked/i, cmdClient);
+  cmdClient.close();
+}
 const clientBuild = await client.request('tools/call', { name: 'bash', arguments: { workspace_id: ws, command: 'npm run build:clients', timeout_ms: 60000 } });
 if (!clientBuild.structuredContent.stdout?.includes('clients ok')) {
   throw new Error('safe bash did not run npm run build:clients');
@@ -896,7 +927,7 @@ await fullTranscriptClient.request('initialize', {
   clientInfo: { name: 'codexpro-full-bash-transcript-smoke', version: '0.1.0' }
 });
 fullTranscriptClient.notify('notifications/initialized');
-const fullTranscriptBash = await fullTranscriptClient.request('tools/call', { name: 'bash', arguments: { command: 'pwd' } });
+const fullTranscriptBash = await fullTranscriptClient.request('tools/call', { name: 'bash', arguments: { command: defaultPwdCommand } });
 const fullTranscriptText = fullTranscriptBash.content?.[0]?.text ?? '';
 if (!fullTranscriptText.includes('## stdout') || !fullTranscriptText.includes(tmp)) {
   throw new Error(`full bash transcript mode did not preserve raw stdout in chat text: ${fullTranscriptText}`);
@@ -1028,9 +1059,9 @@ const guardedConfig = await sessionGuardClient.request('tools/call', { name: 'se
 if (guardedConfig.structuredContent.bashSessionId !== 'codex-main' || guardedConfig.structuredContent.requireBashSession !== true) {
   throw new Error(`server_config did not expose bash session guard: ${JSON.stringify(guardedConfig.structuredContent)}`);
 }
-await expectToolError('bash', { command: 'pwd' }, /bash session/i, sessionGuardClient);
-await expectToolError('bash', { command: 'pwd', session_id: 'other-session' }, /codex-main/i, sessionGuardClient);
-const guardedBash = await sessionGuardClient.request('tools/call', { name: 'bash', arguments: { command: 'pwd', session_id: 'codex-main' } });
+await expectToolError('bash', { command: defaultPwdCommand }, /bash session/i, sessionGuardClient);
+await expectToolError('bash', { command: defaultPwdCommand, session_id: 'other-session' }, /codex-main/i, sessionGuardClient);
+const guardedBash = await sessionGuardClient.request('tools/call', { name: 'bash', arguments: { command: defaultPwdCommand, session_id: 'codex-main' } });
 if (guardedBash.structuredContent.bash_session_id !== 'codex-main' || !guardedBash.content?.[0]?.text?.includes('Exit: 0')) {
   throw new Error(`bash session guard did not allow matching session id: ${JSON.stringify(guardedBash.structuredContent)}`);
 }

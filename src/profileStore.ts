@@ -24,6 +24,7 @@ export interface WorkspaceProfile {
   cloudflareToken?: string;
   token?: string;
   bash?: BashMode | string;
+  shell?: string;
   bashTranscript?: BashTranscriptMode | string;
   codexSessions?: CodexSessionsMode | string;
   codexDir?: string;
@@ -46,6 +47,7 @@ export interface RuntimeConnection {
   tunnel?: TunnelMode | string;
   mode?: ConnectorMode | string;
   bash?: BashMode | string;
+  shell?: string;
   bashTranscript?: BashTranscriptMode | string;
   codexSessions?: CodexSessionsMode | string;
   bashSession?: string;

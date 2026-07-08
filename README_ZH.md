@@ -155,6 +155,15 @@ Authentication: No Authentication / None
 codexpro start
 ```
 
+Windows 原生 shell 可以显式选择，不需要通过 WSL/bash：
+
+```powershell
+codexpro start --powershell
+codexpro start --cmd
+codexpro start --pwsh
+codexpro settings set --shell powershell
+```
+
 适合小改动、文档更新、定位 bug、查看 diff、跑 lint/test/build。
 
 如果你正在另一个 Codex 会话里工作，不希望 ChatGPT 触发任何 shell 命令，用：

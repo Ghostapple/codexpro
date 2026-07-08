@@ -86,6 +86,15 @@ codexpro start --mode handoff
 codexpro start --mode pro
 ```
 
+Native Windows shell entry points:
+
+```powershell
+codexpro start --powershell
+codexpro start --cmd
+codexpro start --pwsh
+codexpro settings set --shell powershell
+```
+
 Tool cards are opt in:
 
 ```bash

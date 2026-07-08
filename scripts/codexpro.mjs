@@ -61,6 +61,11 @@ Options:
   --port <port>             Local port. Default: 8787.
   --bash <off|safe|full>    Bash mode. Default: safe.
   --no-bash                 Shortcut for --bash off.
+  --shell <auto|bash|cmd|powershell|pwsh>
+                             Shell used by the MCP bash tool. Use cmd/powershell/pwsh for native Windows.
+  --cmd                     Shortcut for --shell cmd.
+  --powershell              Shortcut for --shell powershell.
+  --pwsh                    Shortcut for --shell pwsh.
   --bash-transcript <compact|full>
                              Chat transcript for bash results. Default: compact.
                              full prints raw stdout/stderr in chat.
@@ -119,7 +124,9 @@ Execute handoff options:
   codexpro execute-handoff --agent opencode --model provider/model
   codexpro execute-handoff --agent pi --model provider/model
   codexpro execute-handoff --agent custom --command "my-agent --task-file {{plan_file}}"
-  --agent <opencode|pi|codex|custom>
+  codexpro execute-handoff --agent powershell --command "powershell.exe -NoProfile -File .\\agent.ps1 -PlanFile {{plan_file}}"
+  codexpro execute-handoff --agent cmd --command "cmd.exe /d /s /c agent.cmd {{plan_file}}"
+  --agent <opencode|pi|codex|custom|cmd|powershell|pwsh>
                              Local implementation agent adapter.
   --model <provider/model>  Optional model name passed to the adapter.
   --command <template>      Custom command template. Supports {{model}}, {{plan_file}}, {{plan_text}}, {{root}}.
@@ -133,6 +140,7 @@ Watch handoff options:
   codexpro watch-handoff --agent opencode --model provider/model
   codexpro watch-handoff --agent pi --model provider/model
   codexpro watch-handoff --agent custom --command "my-agent --task-file {{plan_file}}"
+  codexpro watch-handoff --agent powershell --command "powershell.exe -NoProfile -File .\\agent.ps1 -PlanFile {{plan_file}}"
   --once                    Exit after checking/running one new plan.
   --poll-interval-ms <ms>   Poll interval. Default: 2000.
   --debounce-ms <ms>        Wait for plan file stability. Default: 500.
@@ -189,6 +197,7 @@ Execute a local handoff after ChatGPT writes .ai-bridge/current-plan.md:
   codexpro execute-handoff --agent opencode --model provider/model
   codexpro execute-handoff --agent pi --model provider/model
   codexpro execute-handoff --agent custom --command "node ./agent.js --task-file {{plan_file}}" --yes
+  codexpro execute-handoff --agent powershell --command "powershell.exe -NoProfile -File .\\agent.ps1 -PlanFile {{plan_file}}" --yes
 
 Watch for new handoff plans and execute them locally:
   codexpro watch-handoff --agent opencode --model provider/model --yes
@@ -307,6 +316,9 @@ function parseArgs(argv) {
     else if (key === 'allow-home') out.allowHome = true;
     else if (key === 'no-auth') out.noAuth = true;
     else if (key === 'no-bash') out.bash = 'off';
+    else if (key === 'cmd') out.shell = 'cmd';
+    else if (key === 'powershell') out.shell = 'powershell';
+    else if (key === 'pwsh') out.shell = 'pwsh';
     else if (key === 'compact-bash-transcript') out.bashTranscript = 'compact';
     else if (key === 'full-bash-transcript') out.bashTranscript = 'full';
     else if (key === 'codex-sessions-read') out.codexSessions = 'read';
@@ -574,6 +586,7 @@ function saveRuntimeConnection(root, details, options = {}) {
     tunnel: options.tunnel ?? '',
     mode: options.mode ?? '',
     bash: options.bash ?? '',
+    shell: options.shell ?? '',
     bashTranscript: options.bashTranscript ?? '',
     codexSessions: options.codexSessions ?? '',
     bashSession: options.bashSession ?? '',
@@ -750,9 +763,11 @@ async function downloadFile(url, destination) {
 }
 
 function verifyCloudflared(binaryPath) {
-  const result = spawnSync(binaryPath, ['--version'], {
+  const invocation = processInvocation(binaryPath, ['--version']);
+  const result = spawnSync(invocation.command, invocation.args, {
     stdio: 'ignore',
     shell: false,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     timeout: 15000
   });
   if (result.status !== 0) {
@@ -839,9 +854,11 @@ async function resolveCloudflared(args) {
 }
 
 function verifyNgrok(binaryPath) {
-  const result = spawnSync(binaryPath, ['version'], {
+  const invocation = processInvocation(binaryPath, ['version']);
+  const result = spawnSync(invocation.command, invocation.args, {
     stdio: 'ignore',
     shell: false,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     timeout: 15000
   });
   if (result.status !== 0) {
@@ -869,9 +886,11 @@ function resolveNgrok(args) {
 }
 
 function verifyTailscale(binaryPath) {
-  const result = spawnSync(binaryPath, ['version'], {
+  const invocation = processInvocation(binaryPath, ['version']);
+  const result = spawnSync(invocation.command, invocation.args, {
     stdio: 'ignore',
     shell: false,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     timeout: 15000
   });
   if (result.status !== 0) {
@@ -981,7 +1000,8 @@ const spawnedChildren = new Set();
 
 function spawnLogged(name, command, args, options = {}) {
   const { verbose = false, ...spawnOptions } = options;
-  const child = spawn(command, args, { ...spawnOptions, stdio: ['ignore', 'pipe', 'pipe'] });
+  const invocation = processInvocation(command, args);
+  const child = spawn(invocation.command, invocation.args, { ...spawnOptions, stdio: ['ignore', 'pipe', 'pipe'], windowsVerbatimArguments: invocation.windowsVerbatimArguments });
   const logLines = [];
   const record = (stream, chunk) => {
     const text = redactForLog(String(chunk));
@@ -1072,10 +1092,13 @@ function requestQuickTunnelViaCurl(proxyUrl) {
   const args = ['--silent', '--show-error', '--fail', '--max-time', '30'];
   if (proxyUrl) args.push('--proxy', proxyUrl);
   args.push('-X', 'POST', 'https://api.trycloudflare.com/tunnel');
-  const result = spawnSync('curl', args, {
+  const curlCommand = process.env.CODEXPRO_CURL_BIN || process.env.CURL_BIN || 'curl';
+  const invocation = processInvocation(curlCommand, args);
+  const result = spawnSync(invocation.command, invocation.args, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    shell: false
+    shell: false,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments
   });
   if (result.status !== 0) {
     throw new Error(redactForLog(`Failed to request Cloudflare quick tunnel via curl: ${result.stderr || result.stdout || `exit ${result.status}`}`));
@@ -1433,7 +1456,10 @@ function buildExecutorCommand(args, root, planPath, planText) {
   if (agent === 'custom') {
     throw new Error('Custom agent execution requires --command.');
   }
-  throw new Error(`Unsupported --agent ${agent}. Use opencode, pi, codex, or custom with --command.`);
+  if (agent === 'cmd' || agent === 'powershell' || agent === 'pwsh') {
+    throw new Error(`--agent ${agent} requires --command, for example: --command "powershell.exe -NoProfile -File .\\agent.ps1 -PlanFile {{plan_file}}".`);
+  }
+  throw new Error(`Unsupported --agent ${agent}. Use opencode, pi, codex, or custom/cmd/powershell/pwsh with --command.`);
 }
 
 function executorCommandPreview(commandInfo) {
@@ -2636,7 +2662,7 @@ function printConnectorBlock(endpoint, token, options = {}) {
   console.log('');
   console.log(paint('bold', 'CodexPro ready'));
   if (options.root) console.log(`  Workspace  ${options.root}`);
-  console.log(`  Mode       ${modeTitle}  tools=${options.toolMode ?? 'standard'}  write=${options.write ?? 'workspace'}  bash=${options.bash ?? 'safe'}`);
+  console.log(`  Mode       ${modeTitle}  tools=${options.toolMode ?? 'standard'}  write=${options.write ?? 'workspace'}  bash=${options.bash ?? 'safe'}  shell=${options.shell ?? 'auto'}`);
   console.log(`  Transcript bash=${options.bashTranscript ?? 'compact'}`);
   if (options.codexSessions && options.codexSessions !== 'off') console.log(`  Codex      sessions=${options.codexSessions}`);
   if (options.bashSession) console.log(`  Bash       session=${options.bashSession}${options.requireBashSession ? ' required' : ''}`);
@@ -2760,6 +2786,7 @@ async function runDoctor(argv) {
   const port = String(optionValue(args, profile, 'port', ['CODEXPRO_PORT'], '8787'));
   const mode = optionValue(args, profile, 'mode', ['CODEXPRO_MODE'], 'agent');
   const bash = optionValue(args, profile, 'bash', ['CODEXPRO_BASH_MODE'], 'safe');
+  const shell = optionValue(args, profile, 'shell', ['CODEXPRO_SHELL', 'CODEXPRO_COMMAND_SHELL'], 'auto');
   const rawWrite = optionValue(args, profile, 'write', ['CODEXPRO_WRITE_MODE'], mode === 'agent' ? 'workspace' : 'handoff');
   let write = String(rawWrite);
   let writeError = '';
@@ -2796,7 +2823,7 @@ async function runDoctor(argv) {
   console.log('');
   printBox('CodexPro doctor', [
     labelValue('Workspace', root),
-    labelValue('Mode', `${mode}  tools=${toolMode}  write=${write}  bash=${bash}`),
+    labelValue('Mode', `${mode}  tools=${toolMode}  write=${write}  bash=${bash}  shell=${shell}`),
     labelValue('Tunnel', tunnel),
     ...(stableHostname ? [labelValue('Hostname', stableHostname)] : []),
     ...(profile.profilePath ? [labelValue('Profile', profile.profilePath)] : [])
@@ -2808,6 +2835,7 @@ async function runDoctor(argv) {
   record(profile.profilePath ? 'ok' : 'warn', 'Saved profile', profile.profilePath ? profileSummary(profile) || profile.profilePath : 'none for this workspace');
   record(['agent', 'handoff', 'pro'].includes(mode) ? 'ok' : 'fail', 'Mode', ['agent', 'handoff', 'pro'].includes(mode) ? mode : '--mode must be agent, handoff, or pro');
   record(['off', 'safe', 'full'].includes(bash) ? 'ok' : 'fail', 'Bash mode', ['off', 'safe', 'full'].includes(bash) ? bash : '--bash must be off, safe, or full');
+  record(['auto', 'bash', 'cmd', 'powershell', 'pwsh'].includes(shell) ? 'ok' : 'fail', 'Shell', ['auto', 'bash', 'cmd', 'powershell', 'pwsh'].includes(shell) ? shell : '--shell must be auto, bash, cmd, powershell, or pwsh');
   record(!writeError && ['off', 'handoff', 'workspace'].includes(write) ? 'ok' : 'fail', 'Write mode', writeError || write);
   record(['minimal', 'standard', 'full'].includes(toolMode) ? 'ok' : 'fail', 'Tool mode', ['minimal', 'standard', 'full'].includes(toolMode) ? toolMode : '--tool-mode must be minimal, standard, or full');
   record(clipboard ? 'ok' : 'warn', 'Clipboard', clipboard || 'not found; URL will be printed for manual copy');
@@ -2961,6 +2989,7 @@ function profileFromPreference(root, args, profile, preference) {
   const mode = optionValue(args, profile, 'mode', ['CODEXPRO_MODE'], 'agent');
   const port = String(optionValue(args, profile, 'port', ['CODEXPRO_PORT'], '8787'));
   const bash = optionValue(args, profile, 'bash', ['CODEXPRO_BASH_MODE'], '');
+  const shell = optionValue(args, profile, 'shell', ['CODEXPRO_SHELL', 'CODEXPRO_COMMAND_SHELL'], '');
   const bashTranscript = bashTranscriptOption(args, profile);
   const codexSessions = codexSessionsOption(args, profile);
   const codexDir = optionValue(args, profile, 'codexDir', ['CODEXPRO_CODEX_DIR'], '');
@@ -2981,6 +3010,7 @@ function profileFromPreference(root, args, profile, preference) {
     ...(preference.cloudflareTokenFile ? { cloudflareTokenFile: preference.cloudflareTokenFile } : {}),
     ...(token ? { token } : {}),
     ...(bash ? { bash } : {}),
+    ...(shell && shell !== 'auto' ? { shell } : {}),
     ...(bashTranscript !== 'compact' ? { bashTranscript } : {}),
     ...(codexSessions !== 'off' ? { codexSessions } : {}),
     ...(codexDir ? { codexDir } : {}),
@@ -3112,7 +3142,9 @@ async function runSetupWizard(argv) {
     const toolMode = optionalChoice('tool-mode', optionValue(defaults, profile, 'toolMode', ['CODEXPRO_TOOL_MODE'], ''), ['minimal', 'standard', 'full']);
     const widgetDomain = optionValue(defaults, profile, 'widgetDomain', ['CODEXPRO_WIDGET_DOMAIN'], '');
     const toolCardsEntry = toolCardsProfileEntry(defaults, profile);
+    const shell = optionValue(defaults, profile, 'shell', ['CODEXPRO_SHELL', 'CODEXPRO_COMMAND_SHELL'], '');
     if (bash) args.push('--bash', bash);
+    if (shell && shell !== 'auto') args.push('--shell', shell);
     if (bashTranscript !== 'compact') args.push('--bash-transcript', bashTranscript);
     if (codexSessions !== 'off') args.push('--codex-sessions', codexSessions);
     if (codexDir) args.push('--codex-dir', codexDir);
@@ -3207,6 +3239,7 @@ async function runSetupWizard(argv) {
         ...(profileCloudflareTokenFile ? { cloudflareTokenFile: profileCloudflareTokenFile } : {}),
         ...(profileToken ? { token: profileToken } : {}),
         ...(bash ? { bash } : {}),
+        ...(shell && shell !== 'auto' ? { shell } : {}),
         ...(bashTranscript !== 'compact' ? { bashTranscript } : {}),
         ...(codexSessions !== 'off' ? { codexSessions } : {}),
         ...(codexDir ? { codexDir } : {}),
@@ -3259,6 +3292,7 @@ function printProfile(root, profile) {
     ...(safe.port ? [labelValue('Port', safe.port)] : []),
     ...(safe.mode ? [labelValue('Mode', safe.mode)] : []),
     ...(safe.bash ? [labelValue('Bash', safe.bash)] : []),
+    ...(safe.shell ? [labelValue('Shell', safe.shell)] : []),
     ...(safe.write ? [labelValue('Write', safe.write)] : []),
     ...(safe.toolMode ? [labelValue('Tool mode', safe.toolMode)] : []),
     ...(safe.toolCards !== undefined ? [labelValue('Tool cards', safe.toolCards ? 'on' : 'off')] : []),
@@ -3311,6 +3345,7 @@ function saveSettingsFromArgs(root, args, profile) {
   const { bashSession, requireBashSession } = bashSessionOptions(args, profile);
   const write = writeOption(args, profile, mode);
   const bash = optionalChoice('bash', optionValue(args, profile, 'bash', ['CODEXPRO_BASH_MODE'], profile.bash ?? ''), ['off', 'safe', 'full']);
+  const shell = optionalChoice('shell', optionValue(args, profile, 'shell', ['CODEXPRO_SHELL', 'CODEXPRO_COMMAND_SHELL'], profile.shell ?? ''), ['auto', 'bash', 'cmd', 'powershell', 'pwsh']);
   const tunnelName = tunnel === 'cloudflare-named' ? (args.tunnelName ?? profile.tunnelName ?? '') : '';
   const ngrokConfig = tunnel === 'ngrok'
     ? resolveConfigPath(root, optionValue(args, profile, 'ngrokConfig', ['NGROK_CONFIG', 'CODEXPRO_NGROK_CONFIG'], ''))
@@ -3335,6 +3370,7 @@ function saveSettingsFromArgs(root, args, profile) {
     ...(cloudflareTokenFile ? { cloudflareTokenFile } : {}),
     ...(token ? { token } : {}),
     ...(bash ? { bash } : {}),
+    ...(shell && shell !== 'auto' ? { shell } : {}),
     ...(bashTranscript !== 'compact' ? { bashTranscript } : {}),
     ...(codexSessions !== 'off' ? { codexSessions } : {}),
     ...(codexDir ? { codexDir } : {}),
@@ -3680,6 +3716,7 @@ async function main() {
   }
   const port = String(optionValue(args, profile, 'port', ['CODEXPRO_PORT'], '8787'));
   const bash = optionValue(args, profile, 'bash', ['CODEXPRO_BASH_MODE'], 'safe');
+  const shell = optionValue(args, profile, 'shell', ['CODEXPRO_SHELL', 'CODEXPRO_COMMAND_SHELL'], 'auto');
   const bashTranscript = bashTranscriptOption(args, profile);
   const codexSessions = codexSessionsOption(args, profile);
   const codexDir = resolveCodexDir(root, optionValue(args, profile, 'codexDir', ['CODEXPRO_CODEX_DIR'], ''));
@@ -3689,6 +3726,7 @@ async function main() {
   const widgetDomain = optionValue(args, profile, 'widgetDomain', ['CODEXPRO_WIDGET_DOMAIN'], 'https://rebel0789.github.io');
   const toolCards = optionBool(args, profile, 'toolCards', ['CODEXPRO_TOOL_CARDS'], false);
   validateChoice('bash', bash, ['off', 'safe', 'full']);
+  validateChoice('shell', shell, ['auto', 'bash', 'cmd', 'powershell', 'pwsh']);
   validateChoice('write', write, ['off', 'handoff', 'workspace']);
   validateChoice('tool-mode', toolMode, ['minimal', 'standard', 'full']);
 
@@ -3702,6 +3740,7 @@ async function main() {
     CODEXPRO_HOST: host,
     CODEXPRO_PORT: port,
     CODEXPRO_BASH_MODE: bash,
+    CODEXPRO_SHELL: shell,
     CODEXPRO_BASH_TRANSCRIPT: bashTranscript,
     CODEXPRO_BASH_SESSION_ID: bashSession,
     CODEXPRO_REQUIRE_BASH_SESSION: requireBashSession ? '1' : '0',
@@ -3733,7 +3772,7 @@ async function main() {
 
   printBox('CodexPro start', [
     labelValue('Workspace', root),
-    labelValue('Mode', `${mode}  tools=${toolMode}  write=${write}  bash=${bash}`),
+    labelValue('Mode', `${mode}  tools=${toolMode}  write=${write}  bash=${bash}  shell=${shell}`),
     labelValue('Bash transcript', bashTranscript),
     labelValue('Codex sessions', codexSessions),
     ...(bashSession ? [labelValue('Bash session', `${bashSession}${requireBashSession ? ' required' : ''}`)] : []),
@@ -3775,6 +3814,7 @@ async function main() {
     toolMode,
     write,
     bash,
+    shell,
     bashTranscript,
     codexSessions,
     bashSession,
@@ -3796,6 +3836,7 @@ async function main() {
       root,
       write,
       bash,
+      shell,
       bashTranscript,
       codexSessions,
       bashSession,
@@ -3839,6 +3880,7 @@ async function main() {
       root,
       write,
       bash,
+      shell,
       bashTranscript,
       codexSessions,
       bashSession,
@@ -3883,6 +3925,7 @@ async function main() {
       root,
       write,
       bash,
+      shell,
       bashTranscript,
       codexSessions,
       bashSession,
@@ -3907,6 +3950,7 @@ async function main() {
       root,
       write,
       bash,
+      shell,
       bashTranscript,
       codexSessions,
       bashSession,
@@ -3949,6 +3993,7 @@ async function main() {
       root,
       write,
       bash,
+      shell,
       bashTranscript,
       codexSessions,
       bashSession,
@@ -4017,6 +4062,7 @@ async function main() {
     root,
     write,
     bash,
+    shell,
     bashTranscript,
     codexSessions,
     bashSession,

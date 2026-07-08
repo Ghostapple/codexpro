@@ -429,7 +429,7 @@ function serverInstructions(config: CodexProConfig): string {
   const bashInstruction =
     config.bashMode === "off"
       ? "5. Bash is disabled and the bash tool is unavailable. Do not attempt shell commands."
-      : "5. Use bash only for meaningful verification commands such as npm test, npm run build, lint, typecheck, or an existing project script.";
+      : `5. Use bash only for meaningful verification commands such as npm test, npm run build, lint, typecheck, or an existing project script. This server runs those commands through shell=${config.commandShell}.`;
 
   return [
     "CodexPro connects ChatGPT to one local development workspace.",
@@ -450,8 +450,14 @@ function serverInstructions(config: CodexProConfig): string {
         ? `8. Bash session label for this server is "${config.bashSessionId}".`
         : "",
     "",
-    `Current modes: tool=${config.toolMode}, bash=${config.bashMode}, write=${config.writeMode}.`
+    `Current modes: tool=${config.toolMode}, bash=${config.bashMode}, shell=${config.commandShell}, write=${config.writeMode}.`
   ].filter(Boolean).join("\n");
+}
+
+function shellProbeCommands(config: CodexProConfig): { allowed: string; blocked: string } {
+  if (config.commandShell === "cmd" || (config.commandShell === "auto" && process.platform === "win32")) return { allowed: "cd", blocked: "echo %USERPROFILE%" };
+  if (config.commandShell === "powershell" || config.commandShell === "pwsh") return { allowed: "Get-Location", blocked: "Write-Output $HOME" };
+  return { allowed: "pwd", blocked: "ls $HOME" };
 }
 
 function limitInt(value: unknown, fallback: number, min: number, max: number): number {
@@ -694,9 +700,12 @@ function shellQuote(value: string): string {
 function agentCommandHint(agent: string, planPath: string, model?: string): string {
   const modelArg = model ? ` --model ${shellQuote(model)}` : " --model '<provider/model>'";
   const quotedPlanPath = shellQuote(planPath);
-  if (agent === "opencode") return `opencode run${modelArg} "$(cat ${quotedPlanPath})"`;
-  if (agent === "pi") return `pi run${modelArg} "$(cat ${quotedPlanPath})"`;
+  const psReadPlan = `(Get-Content -Raw ${quotedPlanPath})`;
+  if (agent === "opencode") return `Unix: opencode run${modelArg} "$(cat ${quotedPlanPath})"\nPowerShell: opencode run${modelArg} ${psReadPlan}`;
+  if (agent === "pi") return `Unix: pi run${modelArg} "$(cat ${quotedPlanPath})"\nPowerShell: pi run${modelArg} ${psReadPlan}`;
   if (agent === "codex") return `Read ${planPath} and execute it in small, reviewable steps.`;
+  if (agent === "powershell" || agent === "pwsh") return `PowerShell executor example: codexpro execute-handoff --agent ${agent} --command "${agent === "pwsh" ? "pwsh" : "powershell.exe"} -NoProfile -File .\\agent.ps1 -PlanFile {{plan_file}}" --yes`;
+  if (agent === "cmd") return `cmd.exe executor example: codexpro execute-handoff --agent cmd --command "cmd.exe /d /s /c agent.cmd {{plan_file}}" --yes`;
   return `Run your local implementation agent manually with ${planPath} as the task input.`;
 }
 
@@ -976,6 +985,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         widgetDomain: config.widgetDomain,
         authEnabled: Boolean(config.authToken),
         bashMode: config.bashMode,
+        commandShell: config.commandShell,
         bashTranscript: config.bashTranscript,
         bashSessionId: config.bashSessionId ?? null,
         requireBashSession: config.requireBashSession,
@@ -1146,13 +1156,14 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
             check("bash policy", "warn", "bash disabled");
           } else {
             const bashProbeOptions = { timeoutMs: 10_000, sessionId: config.bashSessionId };
-            const pwd = await runBash(config, guard, workspace, "pwd", bashProbeOptions);
+            const probe = shellProbeCommands(config);
+            const pwd = await runBash(config, guard, workspace, probe.allowed, bashProbeOptions);
             if (config.bashMode === "safe") {
               try {
-                await runBash(config, guard, workspace, "ls $HOME", bashProbeOptions);
+                await runBash(config, guard, workspace, probe.blocked, bashProbeOptions);
                 check("bash policy", "fail", "safe bash allowed environment expansion unexpectedly");
               } catch {
-                check("bash policy", pwd.exitCode === 0 ? "pass" : "warn", "safe bash allowed pwd and blocked environment expansion");
+                check("bash policy", pwd.exitCode === 0 ? "pass" : "warn", `safe bash allowed ${probe.allowed} and blocked environment expansion`);
               }
             } else {
               check("bash policy", pwd.exitCode === 0 ? "warn" : "fail", "full bash is enabled; use only for trusted local repos");
@@ -1750,7 +1761,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     {
       title: "Bash",
       description:
-        "Run one allowlisted verification command in the workspace, such as tests, build, lint, typecheck, or a project script. Do not use for git status/diff or file inspection; use show_changes, tree, search, and read instead. Do not chain commands with &&, pipes, redirects, or shell file readers.",
+        `Run one allowlisted verification command in the workspace through the configured shell (${config.commandShell}; use --shell cmd/powershell/pwsh for native Windows). Do not use for git status/diff or file inspection; use show_changes, tree, search, and read instead. Do not chain commands with &&, pipes, redirects, or shell file readers.`,
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
         command: z.string().describe("Command to run."),

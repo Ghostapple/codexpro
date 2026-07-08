@@ -350,7 +350,7 @@ const watchCommand = [
   '--agent',
   'custom',
   '--command',
-  `${process.execPath} watch-agent.mjs --task-file {{plan_file}}`,
+  `${quoteArg(process.execPath)} watch-agent.mjs --task-file {{plan_file}}`,
   '--once',
   '--yes',
   '--debounce-ms',
@@ -669,14 +669,18 @@ await fs.writeFile(path.join(boundedUntrackedRoot, 'app.txt'), 'start\n', 'utf8'
 await fs.writeFile(path.join(boundedUntrackedRoot, 'bounded-agent.mjs'), `
 import fs from 'node:fs';
 fs.writeFileSync('large-artifact.bin', Buffer.alloc(96 * 1024, 'a'));
-fs.symlinkSync('app.txt', 'app-link.txt');
+try {
+  fs.symlinkSync('app.txt', 'app-link.txt');
+} catch (error) {
+  if (process.platform !== 'win32' || error?.code !== 'EPERM') throw error;
+}
 `, 'utf8');
 await fs.writeFile(path.join(boundedUntrackedRoot, 'reviewer.mjs'), `
 import fs from 'node:fs';
 const diffPath = process.argv[process.argv.indexOf('--diff') + 1];
 const diff = fs.readFileSync(diffPath, 'utf8');
 const linkLine = diff.split(/\\r?\\n/).find((line) => line.includes('app-link.txt'));
-if (!linkLine || !linkLine.includes('(symlink, target=app.txt') || linkLine.includes('sha256')) process.exit(6);
+if (process.platform !== 'win32' && (!linkLine || !linkLine.includes('(symlink, target=app.txt') || linkLine.includes('sha256'))) process.exit(6);
 if (!diff.includes('large-artifact.bin') || !diff.includes('sha256_first_65536=') || !diff.includes('fingerprint_truncated=true')) process.exit(7);
 if (Buffer.byteLength(diff, 'utf8') > 4500) process.exit(8);
 console.log('CODEXPRO_REVIEW=PASS');
