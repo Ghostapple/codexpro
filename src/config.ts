@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 export type BashMode = "off" | "safe" | "full";
+export type CommandShell = "auto" | "bash" | "cmd" | "powershell" | "pwsh";
 export type BashTranscriptMode = "compact" | "full";
 export type CodexSessionsMode = "off" | "metadata" | "read";
 export type WriteMode = "off" | "handoff" | "workspace";
@@ -17,6 +18,7 @@ export interface CodexProConfig {
   authToken?: string;
   requireHttpToken: boolean;
   bashMode: BashMode;
+  commandShell: CommandShell;
   bashTranscript: BashTranscriptMode;
   bashSessionId?: string;
   requireBashSession: boolean;
@@ -26,6 +28,9 @@ export interface CodexProConfig {
   toolMode: ToolMode;
   inheritEnv: boolean;
   maxReadBytes: number;
+  maxTransferBytes: number;
+  maxActiveTransfers: number;
+  transferExtraMimeTypes: string[];
   maxWriteBytes: number;
   maxOutputBytes: number;
   maxSearchResults: number;
@@ -72,7 +77,10 @@ const DEFAULT_BLOCKED_GLOBS = [
   "**/coverage/**",
   ".cache",
   ".cache/**",
-  "**/.cache/**"
+  "**/.cache/**",
+  ".codexpro*",
+  ".codexpro*/**",
+  "**/.codexpro*/**"
 ];
 
 function parseArgs(argv: string[]): Record<string, string | string[] | boolean> {
@@ -149,7 +157,13 @@ function numberFrom(value: string | undefined, fallback: number, min: number, ma
 
 function bashModeFrom(value: string | undefined): BashMode {
   if (value === "off" || value === "safe" || value === "full") return value;
-  return "safe";
+  return "full";
+}
+
+function commandShellFrom(value: string | undefined): CommandShell {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "bash" || normalized === "cmd" || normalized === "powershell" || normalized === "pwsh") return normalized;
+  return "auto";
 }
 
 function bashTranscriptFrom(value: string | undefined): BashTranscriptMode {
@@ -258,6 +272,7 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
   const portArg = typeof args.port === "string" ? args.port : undefined;
   const hostArg = typeof args.host === "string" ? args.host : undefined;
   const bashArg = typeof args.bash === "string" ? args.bash : undefined;
+  const shellArg = typeof args.shell === "string" ? args.shell : undefined;
   const bashTranscriptArg = typeof args["bash-transcript"] === "string" ? args["bash-transcript"] : undefined;
   const bashSessionArg = typeof args["bash-session"] === "string" ? args["bash-session"] : undefined;
   const codexSessionsArg = typeof args["codex-sessions"] === "string" ? args["codex-sessions"] : undefined;
@@ -278,6 +293,9 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
         ? args["tool-cards"]
         : undefined;
   const extraBlockedGlobs = splitList(process.env.CODEXPRO_BLOCKED_GLOBS, ",");
+  const transferExtraMimeTypes = splitList(process.env.CODEXPRO_TRANSFER_EXTRA_MIME_TYPES, ",")
+    .map((value) => value.toLowerCase())
+    .filter((value, index, all) => value.includes("/") && all.indexOf(value) === index);
   const host = hostArg ?? process.env.CODEXPRO_HOST ?? process.env.HOST ?? "127.0.0.1";
   const authToken = process.env.CODEXPRO_HTTP_TOKEN ?? process.env.CODEBASE_BRIDGE_HTTP_TOKEN;
   const allowNoToken = boolFrom(process.env.CODEXPRO_ALLOW_NO_HTTP_TOKEN, false) && isLoopbackHost(host);
@@ -296,11 +314,12 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     defaultRoot,
     allowedRoots,
     host,
-    port: numberFrom(portArg ?? process.env.CODEXPRO_PORT ?? process.env.PORT, 8787, 1, 65535),
+    port: numberFrom(portArg ?? process.env.CODEXPRO_PORT ?? process.env.PORT, 8788, 1, 65535),
     widgetDomain: widgetDomainFrom(widgetDomainArg ?? process.env.CODEXPRO_WIDGET_DOMAIN),
     authToken,
     requireHttpToken,
     bashMode: bashModeFrom(bashArg ?? process.env.CODEXPRO_BASH_MODE),
+    commandShell: commandShellFrom(shellArg ?? process.env.CODEXPRO_SHELL ?? process.env.CODEXPRO_COMMAND_SHELL),
     bashTranscript: bashTranscriptFrom(bashTranscriptArg ?? process.env.CODEXPRO_BASH_TRANSCRIPT),
     bashSessionId,
     requireBashSession,
@@ -310,6 +329,9 @@ export function loadConfig(argv = process.argv.slice(2)): CodexProConfig {
     toolMode: toolModeFrom(toolModeArg ?? process.env.CODEXPRO_TOOL_MODE),
     inheritEnv: process.env.CODEXPRO_INHERIT_ENV === "1",
     maxReadBytes: numberFrom(process.env.CODEXPRO_MAX_READ_BYTES, 180_000, 4_000, 2_000_000),
+    maxTransferBytes: numberFrom(process.env.CODEXPRO_MAX_TRANSFER_BYTES, 50 * 1024 * 1024, 1_024, 100 * 1024 * 1024),
+    maxActiveTransfers: numberFrom(process.env.CODEXPRO_MAX_ACTIVE_TRANSFERS, 1, 1, 4),
+    transferExtraMimeTypes,
     maxWriteBytes: numberFrom(process.env.CODEXPRO_MAX_WRITE_BYTES, 1_000_000, 1_000, 10_000_000),
     maxOutputBytes: numberFrom(process.env.CODEXPRO_MAX_OUTPUT_BYTES, 120_000, 4_000, 2_000_000),
     maxSearchResults: numberFrom(process.env.CODEXPRO_MAX_SEARCH_RESULTS, 200, 5, 2_000),

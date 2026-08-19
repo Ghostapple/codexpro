@@ -4,6 +4,8 @@
 
 <h1 align="center">CodexPro</h1>
 
+> **V4 提示：** 当前仓库已升级到 CodexProV4 `0.30.0`。文档读取、媒体传输和 Windows 一键启动的最新完整说明以 [README.md](README.md) 为准；本文件保留上游中文功能参考。
+
 <p align="center">
   让 ChatGPT Web 看见你的本地仓库，并像本地代码代理一样工作。
 </p>
@@ -153,6 +155,15 @@ Authentication: No Authentication / None
 
 ```bash
 codexpro start
+```
+
+Windows 原生 shell 可以显式选择，不需要通过 WSL/bash：
+
+```powershell
+codexpro start --powershell
+codexpro start --cmd
+codexpro start --pwsh
+codexpro settings set --shell powershell
 ```
 
 适合小改动、文档更新、定位 bug、查看 diff、跑 lint/test/build。
@@ -352,11 +363,11 @@ CodexPro 是本地开发桥，不是操作系统级沙箱。
 - 写入限制在配置的工作区 root 内。
 - 常见敏感路径会被拒绝：`.env`、私钥、`.git`、`node_modules`、生成目录、缓存目录。
 - symlink 逃逸会被阻止。
-- safe bash 只允许常见检查、搜索、git、lint、test、typecheck、build 等命令。
+- bash 会把命令直接交给所选本地 shell 执行，包括 `nvidia-smi` 等诊断命令；`--bash safe` 仅作为兼容别名保留，不再使用命令白名单。
 - `codexpro start --no-bash` 会完全关闭 ChatGPT 可调用的 bash 工具。
 - `execute-handoff` 和 `watch-handoff` 是本地 CLI 命令，不是远程 MCP 工具。
 
-只有在你信任当前仓库和命令时，才考虑更宽的权限，例如 full bash、自定义执行器、额外 allow root。
+命令会直接交给所选本地 shell 执行；公网 tunnel、工作区路径和文件工具的边界仍按配置生效。
 
 ### Codex 会话边界
 

@@ -52,7 +52,7 @@ codexpro setup</code>
           <div class="hero-proof" aria-label="Core capabilities">
             <span>one workspace</span>
             <span>token-protected URL</span>
-            <span>safe bash default</span>
+            <span>full shell default</span>
             <span>repo-backed context</span>
           </div>
           <div class="hero-actions">
@@ -126,7 +126,7 @@ codexpro setup</code>
           <p class="eyebrow">Use the account you already have</p>
           <h2>Give ChatGPT a real local workspace, not another paste buffer.</h2>
           <p>
-            CodexPro is for builders who already pay for ChatGPT and want that subscription to do more than answer questions. It gives ChatGPT a local workspace bridge: file reads, exact edits, source writes, search, git status, git diff, and allowlisted verification commands.
+            CodexPro is for builders who already pay for ChatGPT and want that subscription to do more than answer questions. It gives ChatGPT a local workspace bridge: file reads, exact edits, source writes, search, git status, git diff, and local shell commands.
           </p>
           <p>
             Codex and ChatGPT are different product surfaces. If one workflow is unavailable and another surface you already have access to is still available, CodexPro lets you work against the same local repo without changing either product's limits.
@@ -224,7 +224,7 @@ codexpro setup</code>
           <p class="eyebrow">Quick start</p>
           <h2>Install once, then run setup in your repo.</h2>
           <p>
-            The default path uses normal coding mode, workspace writes, safe bash, and a tunnel you choose during setup. After setup, daily startup is just <code>codexpro start</code>.
+            The default path uses normal coding mode, workspace writes, unrestricted local shell commands, and a tunnel you choose during setup. After setup, daily startup is just <code>codexpro start</code>.
           </p>
         </div>
         <div class="steps">
@@ -491,9 +491,9 @@ codexpro settings delete --yes</code></pre>
             <p><code>.env</code>, private keys, <code>.git</code>, <code>node_modules</code>, generated build/cache folders, paths outside the workspace, and symlink escapes are refused.</p>
           </article>
           <article>
-            <small>Safe bash</small>
+            <small>Full shell</small>
             <h3>Verification without full shell</h3>
-            <p>Safe mode allows common repo inspection, git, tests, lint, typecheck, and build commands. Use full bash only for trusted local repos.</p>
+            <p>Bash commands are passed to the selected local shell, so diagnostics such as <code>nvidia-smi</code> work directly. Use <code>--no-bash</code> or a bash session guard when execution must be disabled or gated.</p>
           </article>
           <article>
             <small>No surprise shell</small>
@@ -602,7 +602,7 @@ codexpro settings delete --yes</code></pre>
         <ul>
           <li>Public tunnels are token-protected by default.</li>
           <li><code>.env</code>, private keys, <code>.git</code>, <code>node_modules</code>, and symlink escapes are blocked.</li>
-          <li>Safe bash allows common inspection and test commands, not arbitrary shell control.</li>
+          <li>Bash passes commands to the selected local shell without an allowlist; <code>--no-bash</code> and the session guard remain available.</li>
           <li><code>--no-bash</code> disables all ChatGPT-triggered shell commands.</li>
           <li><code>--bash-session</code> with <code>--require-bash-session</code> requires explicit session targeting before bash runs.</li>
           <li>Use handoff mode when you want ChatGPT to plan and Codex to edit.</li>

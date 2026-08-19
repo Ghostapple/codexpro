@@ -67,13 +67,13 @@ Use CodexPro. Try to read .env. Explain why the request is blocked.
 ```
 
 ```text
-Use CodexPro. Run bash with pwd, then run bash with a blocked command. Report both outcomes.
+Use CodexPro. Run bash with pwd, then run bash with `nvidia-smi --query-gpu=name --format=csv,noheader`. Report both outcomes, including the command exit code.
 ```
 
 ## Security Gate
 
 - Keep auth enabled for public tunnels.
-- Keep `CODEXPRO_BASH_MODE=safe` by default.
+- Bash commands are unrestricted by the former safe-mode allowlist; verify `--no-bash` and the optional bash session guard when testing execution controls.
 - Keep `CODEXPRO_WRITE_MODE=workspace` only for agent mode.
 - Keep blocked path tests for `.env`, `.git`, `node_modules`, private keys, and symlink escapes.
 - Do not broaden allowed roots during setup unless the user explicitly asks.

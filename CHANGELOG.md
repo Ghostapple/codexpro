@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.30.0 - CodexProV4
+
+- Added bounded text extraction for PDF and DOCX through the existing `read` tool.
+- Added the read-only `transfer_file` MCP tool for validated image, audio, and video content blocks.
+- Added MIME/magic-byte checks, SHA-256 metadata, a 50 MiB default cap, and bounded transfer concurrency.
+- Reserved port `8788` for V4 and added a token-safe Windows desktop/Tailscale launcher installer with listener monitoring and automatic recovery.
+- Added focused document/media fixtures, local/HTTP smoke coverage, and a temporary authenticated remote tunnel smoke.
+- Reworked the main README around V4 installation, ChatGPT connection, one-click Windows startup, security boundaries, validation, and troubleshooting.
+
 ## Unreleased
 
 - Added Tailscale Funnel as a saved tunnel/profile option, including `codexpro tailscale --hostname ...`, launcher support, admin profile support, and settings smoke coverage.

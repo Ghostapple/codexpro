@@ -18,138 +18,9 @@ export interface BashResult {
   bashSessionId?: string;
 }
 
-const SAFE_ALLOWED_PREFIXES = [
-  "pwd",
-  "ls",
-  "find",
-  "git status",
-  "git diff",
-  "git log",
-  "git show",
-  "git branch",
-  "git rev-parse",
-  "git ls-files",
-  "npm test",
-  "npm run test",
-  "npm run typecheck",
-  "npm run lint",
-  "npm run build",
-  "npm run check",
-  "pnpm test",
-  "pnpm run test",
-  "pnpm run typecheck",
-  "pnpm run lint",
-  "pnpm run build",
-  "pnpm run check",
-  "yarn test",
-  "yarn run test",
-  "yarn run typecheck",
-  "yarn run lint",
-  "yarn run build",
-  "yarn run check",
-  "bun test",
-  "bun run test",
-  "bun run typecheck",
-  "bun run lint",
-  "bun run build",
-  "pytest",
-  "python -m pytest",
-  "python3 -m pytest",
-  "uv run pytest",
-  "go test",
-  "cargo test",
-  "cargo check",
-  "cargo clippy",
-  "tsc",
-  "npx tsc",
-  "eslint",
-  "npx eslint",
-  "biome check",
-  "npx biome check"
-];
-
-const SAFE_BLOCKED_PATTERNS = [
-  /(^|\s)rm\s+/,
-  /(^|\s)mv\s+/,
-  /(^|\s)cp\s+/,
-  /(^|\s)dd\s+/,
-  /(^|\s)sudo\s+/,
-  /(^|\s)chmod\s+/,
-  /(^|\s)chown\s+/,
-  /(^|\s)kill\s+/,
-  /(^|\s)pkill\s+/,
-  /(^|\s)curl\s+/,
-  /(^|\s)wget\s+/,
-  /(^|\s)ssh\s+/,
-  /(^|\s)scp\s+/,
-  /(^|\s)rsync\s+/,
-  /(^|\s)docker\s+/,
-  /(^|\s)podman\s+/,
-  /(^|\s)git\s+push\b/,
-  /(^|\s)git\s+reset\b/,
-  /(^|\s)git\s+clean\b/,
-  /(^|\s)git\s+checkout\b/,
-  /(^|\s)git\s+switch\b/,
-  /(^|\s)git\s+restore\b/,
-  /(^|\s)(npm|pnpm|yarn)\s+publish\b/,
-  /(^|\s)--no-index\b/,
-  /(^|\s)--fix\b/,
-  /(^|\s)(\/|~(?:\/|\s|$))/,
-  /(^|\s)\.\.(?:\/|\s|$)/,
-  /\$/,
-  /(^|[\s:])(?:\.env(?:[./\s:]|$)|\.git(?:[\/\s:]|$)|node_modules(?:[\/\s:]|$)|\.ssh(?:[\/\s:]|$)|id_rsa(?:[.\s:]|$)|id_ed25519(?:[.\s:]|$)|[^\s:]*\.(?:pem|key)(?:[\s:]|$))/,
-  /(^|\s)['"]?-exec(?:['"]|\s|$)/,
-  /(^|\s)['"]?-execdir(?:['"]|\s|$)/,
-  /(^|\s)['"]?-delete(?:['"]|\s|$)/,
-  /(^|\s)['"]?-ok(?:['"]|\s|$)/,
-  /(^|\s)['"]?-okdir(?:['"]|\s|$)/,
-  /(^|\s)['"]?-fprint0?(?:['"]|\s|$)/,
-  /(^|\s)['"]?-fprintf(?:['"]|\s|$)/,
-  /(^|\s)['"]?-fls(?:['"]|\s|$)/,
-  /(^|\s)['"]?--output(?:=|['"]|\s|$)/,
-  /(^|\s)(sed|perl)\s+.*(^|\s)-i(\s|$)/,
-  /(^|\s)(cat|grep|rg|head|tail|wc)\s+/,
-  /[;&|<>`]/,
-  /[\r\n]/
-];
-
-function compact(command: string): string {
-  return command.trim().replace(/\s+/g, " ");
-}
-
-function startsWithAllowedPrefix(command: string): boolean {
-  const normalized = compact(command);
-  return isAllowedPackageScript(normalized) || SAFE_ALLOWED_PREFIXES.some((prefix) => normalized === prefix || normalized.startsWith(`${prefix} `));
-}
-
-function isAllowedPackageScript(command: string): boolean {
-  const packageScriptPattern =
-    /^(?:npm|pnpm|yarn|bun)\s+run\s+(?:test|typecheck|lint|build|check)(?::[A-Za-z0-9._-]+)*(?:\s+--\s+[A-Za-z0-9._:= -]+)?$/;
-  return packageScriptPattern.test(command);
-}
-
-function assertSafeCommand(config: CodexProConfig, command: string): void {
+function assertBashEnabled(config: CodexProConfig): void {
   if (config.bashMode === "off") {
-    throw new CodexProError("bash tool is disabled. Start with CODEXPRO_BASH_MODE=safe or CODEXPRO_BASH_MODE=full to enable it.");
-  }
-  if (config.bashMode === "full") return;
-
-  const raw = command.trim();
-  const normalized = compact(command);
-  for (const pattern of SAFE_BLOCKED_PATTERNS) {
-    if (pattern.test(raw) || pattern.test(normalized)) {
-      throw new CodexProError(
-        `Command is blocked in CODEXPRO_BASH_MODE=safe: ${normalized}\n` +
-          "Use separate read/search/git tools, or restart with CODEXPRO_BASH_MODE=full only for trusted repos."
-      );
-    }
-  }
-  if (!startsWithAllowedPrefix(normalized)) {
-    throw new CodexProError(
-      `Command is not in the safe bash allowlist: ${normalized}\n` +
-        "Allowed examples: ls, find, git status, git diff, npm test, npm run typecheck, npm run build:clients, pytest, go test, cargo test. Use read/search tools for file contents. " +
-        "Use CODEXPRO_BASH_MODE=full for trusted local automation."
-    );
+    throw new CodexProError("bash tool is disabled. Start without --no-bash or set CODEXPRO_BASH_MODE=full to enable it.");
   }
 }
 
@@ -177,6 +48,19 @@ function makeEnv(config: CodexProConfig): NodeJS.ProcessEnv {
   if (config.inheritEnv) {
     return { ...process.env, NO_COLOR: "1", CI: process.env.CI ?? "1" };
   }
+  if (process.platform === "win32") {
+    return {
+      PATH: process.env.PATH ?? process.env.Path ?? "",
+      Path: process.env.Path ?? process.env.PATH ?? "",
+      SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
+      ComSpec: process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe",
+      TEMP: process.env.TEMP ?? "",
+      TMP: process.env.TMP ?? "",
+      USERPROFILE: process.env.USERPROFILE ?? "",
+      NO_COLOR: "1",
+      CI: "1"
+    };
+  }
   return {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: process.env.HOME ?? "",
@@ -191,6 +75,20 @@ function makeEnv(config: CodexProConfig): NodeJS.ProcessEnv {
 
 function bashExecutable(): string {
   return fs.existsSync("/bin/bash") ? "/bin/bash" : "bash";
+}
+
+function commandShellInvocation(config: CodexProConfig, command: string): { command: string; args: string[] } {
+  const shell = config.commandShell === "auto" && process.platform === "win32" ? "cmd" : config.commandShell;
+  if (shell === "cmd") {
+    return { command: process.env.ComSpec || "cmd.exe", args: ["/d", "/s", "/c", command] };
+  }
+  if (shell === "powershell") {
+    return { command: "powershell.exe", args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command] };
+  }
+  if (shell === "pwsh") {
+    return { command: "pwsh", args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command] };
+  }
+  return { command: bashExecutable(), args: ["-lc", command] };
 }
 
 function trimOutput(value: string, maxBytes: number): { value: string; truncated: boolean } {
@@ -209,14 +107,15 @@ export async function runBash(
 ): Promise<BashResult> {
   if (!command?.trim()) throw new CodexProError("command is required.");
   const bashSessionId = assertBashSession(config, options.sessionId);
-  assertSafeCommand(config, command);
+  assertBashEnabled(config);
   const cwdResolved = guard.resolve(workspace, options.cwd ?? ".");
   const cwd = cwdResolved.absPath;
   const timeoutMs = Math.max(1_000, Math.min(options.timeoutMs ?? 30_000, 180_000));
   const start = Date.now();
 
   return new Promise((resolve, reject) => {
-    const child = spawn(bashExecutable(), ["-lc", command], {
+    const invocation = commandShellInvocation(config, command);
+    const child = spawn(invocation.command, invocation.args, {
       cwd,
       env: makeEnv(config),
       stdio: ["ignore", "pipe", "pipe"]

@@ -16,6 +16,10 @@ import { codexproInventory, loadSkill } from "./capabilitiesOps.js";
 import { listCodexSessions, readCodexSession } from "./codexSessions.js";
 import { TOOL_CARD_LEGACY_URIS, TOOL_CARD_MIME_TYPE, TOOL_CARD_URI, toolCardWidgetHtml } from "./toolCardWidget.js";
 import { hasSecretValue, redactSensitiveText, redactStructured } from "./redact.js";
+import { normalizeToolArguments } from "./protocolCompat.js";
+import { applyCodexPatch, detectPatchFormat, type CompatiblePatchResult, type PatchFormat } from "./codexPatch.js";
+import { batchEditTextFiles, type BatchEditItem } from "./batchEdit.js";
+import { readWorkspaceFile, WorkspaceFileTransfer, type TransferFileResult } from "./fileContentOps.js";
 
 const STRUCTURED_STRING_MAX_CHARS = 30_000;
 
@@ -45,6 +49,41 @@ function textResult(text: string, structuredContent: Record<string, unknown> = {
     content: [{ type: "text", text: redactSensitiveText(text) }],
     structuredContent: redactStructured(structuredContent),
     _meta: meta
+  };
+}
+
+function transferFileResult(workspace: Workspace, result: TransferFileResult): any {
+  const metadata = {
+    workspace_id: workspace.id,
+    root: workspace.root,
+    path: result.path,
+    mime_type: result.mimeType,
+    extension: result.extension,
+    kind: result.kind,
+    bytes: result.bytes,
+    sha256: result.sha256,
+    uri: result.uri,
+    encoding: "base64"
+  };
+  const summary = redactSensitiveText(
+    `# Transfer File\n\nPath: ${result.path}\nMIME: ${result.mimeType}\nKind: ${result.kind}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}`
+  );
+  const mediaBlock =
+    result.kind === "image"
+      ? { type: "image", data: result.data, mimeType: result.mimeType }
+      : result.kind === "audio"
+        ? { type: "audio", data: result.data, mimeType: result.mimeType }
+        : {
+            type: "resource",
+            resource: {
+              uri: result.uri,
+              mimeType: result.mimeType,
+              blob: result.data
+            }
+          };
+  return {
+    content: [{ type: "text", text: summary }, mediaBlock],
+    structuredContent: redactStructured(metadata)
   };
 }
 
@@ -92,7 +131,8 @@ function validateToolArgs(name: string, options: Record<string, unknown>, args: 
     }
   }
   if (!Object.keys(shape).length) return {};
-  const parsed = z.object(shape).safeParse(args ?? {});
+  const normalizedArgs = normalizeToolArguments(args, Object.keys(shape));
+  const parsed = z.object(shape).safeParse(normalizedArgs);
   if (parsed.success) return parsed.data;
   const details = parsed.error.issues
     .map((issue) => `${issue.path.length ? issue.path.join(".") : "arguments"}: ${issue.message}`)
@@ -207,6 +247,7 @@ const SUPERTOOL_ACTION_ALIASES: Record<string, string> = {
   inventory: "codexpro_inventory",
   open: "open_current_workspace",
   snapshot: "workspace_snapshot",
+  transfer: "transfer_file",
   changes: "show_changes",
   handoff_poll: "wait_for_handoff",
   pro_export: "export_pro_context",
@@ -246,10 +287,10 @@ function assertWriteToolAllowed(config: CodexProConfig, relPath: string): void {
   if (config.writeMode === "handoff") {
     throw new CodexProError(
       `Source writes are disabled because CODEXPRO_WRITE_MODE=handoff. ` +
-        `Use handoff_to_agent or handoff_to_codex, or write/edit/apply_patch only inside ${config.contextDir}/.`
+        `Use handoff_to_agent or handoff_to_codex, or write/edit/batch_edit/apply_patch only inside ${config.contextDir}/.`
     );
   }
-  throw new CodexProError("write/edit/apply_patch tools are disabled because CODEXPRO_WRITE_MODE=off. handoff_to_agent and handoff_to_codex are still available for planning.");
+  throw new CodexProError("write/edit/batch_edit/apply_patch tools are disabled because CODEXPRO_WRITE_MODE=off. handoff_to_agent and handoff_to_codex are still available for planning.");
 }
 
 function registerToolCompat(
@@ -302,8 +343,10 @@ const MINIMAL_TOOL_NAMES = [
   "open_current_workspace",
   "open_workspace",
   "read",
+  "transfer_file",
   "write",
   "edit",
+  "batch_edit",
   "apply_patch",
   "bash",
   "show_changes"
@@ -333,8 +376,10 @@ const FULL_TOOL_NAMES = [
   "tree",
   "search",
   "read",
+  "transfer_file",
   "write",
   "edit",
+  "batch_edit",
   "apply_patch",
   "bash",
   "git_status",
@@ -367,7 +412,7 @@ function toolNamesForMode(config: CodexProConfig): string[] {
     if (bashIndex !== -1) names.splice(bashIndex, 1);
   }
   if (config.writeMode !== "workspace") {
-    for (const writeTool of ["write", "edit", "apply_patch"]) {
+    for (const writeTool of ["write", "edit", "batch_edit", "apply_patch"]) {
       const toolIndex = names.indexOf(writeTool);
       if (toolIndex !== -1) names.splice(toolIndex, 1);
     }
@@ -396,7 +441,7 @@ function registeredToolNames(server: McpServer): string[] {
 
 function shouldRegisterTool(config: CodexProConfig, name: string): boolean {
   if (name === "bash" && config.bashMode === "off") return false;
-  if ((name === "write" || name === "edit" || name === "apply_patch") && config.writeMode !== "workspace") return false;
+  if ((name === "write" || name === "edit" || name === "batch_edit" || name === "apply_patch") && config.writeMode !== "workspace") return false;
   if (name === "codex_sessions") return config.codexSessions !== "off";
   if (name === "read_codex_session") return config.codexSessions === "read";
   if (name === "handoff_to_agent" && config.writeMode === "handoff") return true;
@@ -422,14 +467,14 @@ function registerCodexTool(
 function serverInstructions(config: CodexProConfig): string {
   const editInstruction =
     config.writeMode === "workspace"
-      ? "4. Edit source files with write/edit/apply_patch. After edits, call show_changes once for git status, diff stats, and review diff."
+      ? "4. Edit source files with write/edit/batch_edit/apply_patch. After edits, call show_changes once for git status, diff stats, and review diff."
       : config.writeMode === "handoff"
-        ? "4. Source writes are disabled and generic write/edit/apply_patch tools are unavailable. Use handoff_to_agent/handoff_to_codex for plans."
+        ? "4. Source writes are disabled and generic write/edit/batch_edit/apply_patch tools are unavailable. Use handoff_to_agent/handoff_to_codex for plans."
         : "4. Write/edit/apply_patch tools are disabled. Do not attempt direct file writes; use handoff or context export workflows instead.";
   const bashInstruction =
     config.bashMode === "off"
       ? "5. Bash is disabled and the bash tool is unavailable. Do not attempt shell commands."
-      : "5. Use bash only for meaningful verification commands such as npm test, npm run build, lint, typecheck, or an existing project script.";
+      : `5. Use bash for local shell commands requested by the user or needed for diagnosis, including hardware/status commands such as nvidia-smi. Commands run through shell=${config.commandShell} without an allowlist.`;
 
   return [
     "CodexPro connects ChatGPT to one local development workspace.",
@@ -437,7 +482,8 @@ function serverInstructions(config: CodexProConfig): string {
     "Preferred workflow:",
     "1. Start with open_current_workspace. Use open_workspace only when the user gives a different root or asks to switch folders.",
     "2. Follow any AGENTS.md-style instructions returned by the workspace open call before editing files.",
-    "3. Inspect with tree, search, and read. Do not use bash for git status, git diff, cat, sed, grep, rg, find, ls, or file reading.",
+    "3. Prefer tree, search, read, and git tools when their structured output is useful; bash remains available for any local shell command.",
+    "Use read for text, PDF, and DOCX content. Use transfer_file only for approved binary image, audio, or video files.",
     editInstruction,
     bashInstruction,
     "6. Keep tool calls minimal. Prefer one targeted search plus show_changes instead of repeated broad inspection calls.",
@@ -450,7 +496,7 @@ function serverInstructions(config: CodexProConfig): string {
         ? `8. Bash session label for this server is "${config.bashSessionId}".`
         : "",
     "",
-    `Current modes: tool=${config.toolMode}, bash=${config.bashMode}, write=${config.writeMode}.`
+    `Current modes: tool=${config.toolMode}, bash=${config.bashMode}, shell=${config.commandShell}, write=${config.writeMode}.`
   ].filter(Boolean).join("\n");
 }
 
@@ -582,13 +628,10 @@ function applyWorkspacePatch(
   guard: PathGuard,
   workspace: Workspace,
   patch: string
-): { paths: string[]; stdout: string; stderr: string; diff: string; additions: number; deletions: number; changed: boolean } {
+): CompatiblePatchResult {
   if (!patch.trim()) throw new CodexProError("patch is required.");
   if (Buffer.byteLength(patch, "utf8") > config.maxWriteBytes) {
     throw new CodexProError(`Patch is too large. Limit: ${config.maxWriteBytes} bytes.`);
-  }
-  if (hasSecretValue(patch)) {
-    throw new CodexProError("Secret-looking content is blocked from apply_patch. Use placeholders such as [REDACTED_SECRET].");
   }
   if (patchHasSymlinkMode(patch)) {
     throw new CodexProError("Symlink patches are blocked from apply_patch.");
@@ -632,8 +675,25 @@ function applyWorkspacePatch(
     diff,
     additions: stats.additions,
     deletions: stats.deletions,
-    changed: true
+    changed: true,
+    format: "git"
   };
+}
+
+async function applyCompatibleWorkspacePatch(
+  config: CodexProConfig,
+  guard: PathGuard,
+  workspace: Workspace,
+  patch: string,
+  requestedFormat: PatchFormat = "auto"
+): Promise<CompatiblePatchResult> {
+  if (!patch.trim()) throw new CodexProError("patch is required.");
+  if (Buffer.byteLength(patch, "utf8") > config.maxWriteBytes) {
+    throw new CodexProError(`Patch is too large. Limit: ${config.maxWriteBytes} bytes.`);
+  }
+  const format = detectPatchFormat(patch, requestedFormat);
+  if (format === "codex") return applyCodexPatch(config, guard, workspace, patch);
+  return applyWorkspacePatch(config, guard, workspace, patch);
 }
 
 function looksLikeGitError(output: string): boolean {
@@ -694,9 +754,12 @@ function shellQuote(value: string): string {
 function agentCommandHint(agent: string, planPath: string, model?: string): string {
   const modelArg = model ? ` --model ${shellQuote(model)}` : " --model '<provider/model>'";
   const quotedPlanPath = shellQuote(planPath);
-  if (agent === "opencode") return `opencode run${modelArg} "$(cat ${quotedPlanPath})"`;
-  if (agent === "pi") return `pi run${modelArg} "$(cat ${quotedPlanPath})"`;
+  const psReadPlan = `(Get-Content -Raw ${quotedPlanPath})`;
+  if (agent === "opencode") return `Unix: opencode run${modelArg} "$(cat ${quotedPlanPath})"\nPowerShell: opencode run${modelArg} ${psReadPlan}`;
+  if (agent === "pi") return `Unix: pi run${modelArg} "$(cat ${quotedPlanPath})"\nPowerShell: pi run${modelArg} ${psReadPlan}`;
   if (agent === "codex") return `Read ${planPath} and execute it in small, reviewable steps.`;
+  if (agent === "powershell" || agent === "pwsh") return `PowerShell executor example: codexpro execute-handoff --agent ${agent} --command "${agent === "pwsh" ? "pwsh" : "powershell.exe"} -NoProfile -File .\\agent.ps1 -PlanFile {{plan_file}}" --yes`;
+  if (agent === "cmd") return `cmd.exe executor example: codexpro execute-handoff --agent cmd --command "cmd.exe /d /s /c agent.cmd {{plan_file}}" --yes`;
   return `Run your local implementation agent manually with ${planPath} as the task input.`;
 }
 
@@ -864,7 +927,8 @@ function getSharedWorkspaceManager(config: CodexProConfig): WorkspaceManager {
 export function createCodexProServer(config: CodexProConfig): McpServer {
   const workspaces = getSharedWorkspaceManager(config);
   const guard = new PathGuard(config);
-  const server = new McpServer({ name: "CodexPro", version: "0.28.6" }, { instructions: serverInstructions(config) });
+  const fileTransfer = new WorkspaceFileTransfer(config);
+  const server = new McpServer({ name: "CodexProV4", version: "0.30.0" }, { instructions: serverInstructions(config) });
   registeredToolNamesByServer.set(server as object, []);
   registerToolCardResource(server, config);
 
@@ -976,6 +1040,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         widgetDomain: config.widgetDomain,
         authEnabled: Boolean(config.authToken),
         bashMode: config.bashMode,
+        commandShell: config.commandShell,
         bashTranscript: config.bashTranscript,
         bashSessionId: config.bashSessionId ?? null,
         requireBashSession: config.requireBashSession,
@@ -987,6 +1052,9 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         inheritEnv: config.inheritEnv,
         contextDir: config.contextDir,
         maxReadBytes: config.maxReadBytes,
+        maxTransferBytes: config.maxTransferBytes,
+        maxActiveTransfers: config.maxActiveTransfers,
+        transferExtraMimeTypes: config.transferExtraMimeTypes,
         maxWriteBytes: config.maxWriteBytes,
         maxOutputBytes: config.maxOutputBytes,
         maxSearchResults: config.maxSearchResults,
@@ -1005,11 +1073,11 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     {
       title: "CodexPro Self Test",
       description:
-        "Run one controlled, local-only CodexPro diagnostic. It checks modes, expected tools, workspace access, skills, git, safe bash policy, selected-only Pro context, and optional .ai-bridge write/edit probe without touching source files.",
+        "Run one local-only CodexPro diagnostic. It checks modes, expected tools, workspace access, skills, git, shell execution, selected-only Pro context, and optional .ai-bridge write/edit probe without touching source files.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
         write_probe: z.boolean().optional().describe("Create/edit only .ai-bridge/codexpro-self-test.md. Default: true."),
-        bash_probe: z.boolean().optional().describe("Check bash policy with safe local commands only. Default: true."),
+        bash_probe: z.boolean().optional().describe("Check local shell execution. Default: true."),
         pro_context_probe: z.boolean().optional().describe("Build a selected-only Pro context bundle in memory without writing pro-context.md. Default: true."),
         include_global_skills: z.boolean().optional().describe("Include user/plugin skill discovery in the inventory check. Default: true."),
         max_skills: z.number().int().min(1).max(120).optional().describe("Maximum skills to inspect during the inventory check. Default: 40.")
@@ -1035,7 +1103,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       check("workspace", "pass", workspace.root);
       check("tool mode", config.toolMode === "full" ? "pass" : "warn", `${config.toolMode}; expected tools: ${toolNamesForMode(config).length}`);
       check("write mode", config.writeMode === "off" ? "warn" : "pass", config.writeMode);
-      check("bash mode", config.bashMode === "full" ? "warn" : "pass", config.bashMode);
+      check("bash mode", config.bashMode === "off" ? "warn" : "pass", `${config.bashMode}; shell commands are not filtered by an allowlist`);
       check(
         "http auth",
         "pass",
@@ -1143,26 +1211,22 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
       if (parseBool(args.bash_probe, true)) {
         try {
           if (config.bashMode === "off") {
-            check("bash policy", "warn", "bash disabled");
+            check("bash execution", "warn", "bash disabled");
           } else {
             const bashProbeOptions = { timeoutMs: 10_000, sessionId: config.bashSessionId };
-            const pwd = await runBash(config, guard, workspace, "pwd", bashProbeOptions);
-            if (config.bashMode === "safe") {
-              try {
-                await runBash(config, guard, workspace, "ls $HOME", bashProbeOptions);
-                check("bash policy", "fail", "safe bash allowed environment expansion unexpectedly");
-              } catch {
-                check("bash policy", pwd.exitCode === 0 ? "pass" : "warn", "safe bash allowed pwd and blocked environment expansion");
-              }
-            } else {
-              check("bash policy", pwd.exitCode === 0 ? "warn" : "fail", "full bash is enabled; use only for trusted local repos");
-            }
+            const probeCommand = config.commandShell === "cmd" || (config.commandShell === "auto" && process.platform === "win32")
+              ? "cd"
+              : config.commandShell === "powershell" || config.commandShell === "pwsh"
+                ? "Get-Location"
+                : "pwd";
+            const probe = await runBash(config, guard, workspace, probeCommand, bashProbeOptions);
+            check("bash execution", probe.exitCode === 0 ? "pass" : "warn", `ran ${probeCommand} without command filtering`);
           }
         } catch (error) {
-          check("bash policy", "fail", errorText(error));
+          check("bash execution", "fail", errorText(error));
         }
       } else {
-        check("bash policy", "warn", "skipped by request");
+        check("bash execution", "warn", "skipped by request");
       }
 
       check(
@@ -1583,13 +1647,13 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     "read",
     {
       title: "Read File",
-      description: "Read a specific text file with line numbers. Avoid rereading files after write/edit/apply_patch unless exact final content is needed.",
+      description: "Read a specific UTF-8 text, PDF, or DOCX file with line numbers. PDF/DOCX are extracted to bounded text; OCR is not performed.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
         path: z.string().describe("File path relative to workspace root."),
         start_line: z.number().int().min(1).optional().describe("First line to read. Default: 1."),
         end_line: z.number().int().min(1).optional().describe("Last line to read. Default: end of file."),
-        max_bytes: z.number().int().min(1000).max(2000000).optional().describe("Maximum file bytes. Capped by server config.")
+        max_bytes: z.number().int().min(1000).max(2000000).optional().describe("Maximum text bytes to read or return. Capped by server config.")
       },
       annotations: READ_ONLY_ANNOTATIONS,
       _meta: {
@@ -1600,13 +1664,48 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
-      const result = await readTextFile(config, guard, workspace, args.path, {
+      const result = await readWorkspaceFile(config, guard, workspace, args.path, {
         startLine: args.start_line,
         endLine: args.end_line,
         maxBytes: args.max_bytes
       });
-      const text = `# Read File\n\nPath: ${result.path}\nLines: ${result.startLine}-${result.endLine} of ${result.totalLines}\nBytes: ${result.bytes}\nSHA-256: ${result.sha256}\n\n\`\`\`text\n${result.text}\n\`\`\``;
+      const details = [
+        `Path: ${result.path}`,
+        `Type: ${result.sourceKind} (${result.mimeType})`,
+        `Lines: ${result.startLine}-${result.endLine} of ${result.totalLines}`,
+        `Bytes: ${result.bytes}`,
+        typeof result.extractedBytes === "number" ? `Extracted bytes: ${result.extractedBytes}` : "",
+        typeof result.pageCount === "number" ? `Pages: ${result.pageCount}` : "",
+        `SHA-256: ${result.sha256}`,
+        result.warnings?.length ? `Warnings: ${result.warnings.join("; ")}` : ""
+      ].filter(Boolean).join("\n");
+      const text = `# Read File\n\n${details}\n\n\`\`\`text\n${result.text}\n\`\`\``;
       return textResult(text, { workspace_id: workspace.id, root: workspace.root, ...result });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "transfer_file",
+    {
+      title: "Transfer Binary File",
+      description: "Transfer one approved workspace image, audio, or video file as an MCP content block. Use read instead for text, PDF, and DOCX.",
+      inputSchema: {
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        path: z.string().describe("Binary file path relative to workspace root."),
+        max_bytes: z.number().int().min(1024).max(104857600).optional().describe("Optional lower per-call byte limit. Cannot exceed server config.")
+      },
+      annotations: READ_ONLY_ANNOTATIONS,
+      _meta: {
+        "openai/toolInvocation/invoking": "Transferring file...",
+        "openai/toolInvocation/invoked": "File transferred"
+      }
+    },
+    async (args) => {
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      const result = await fileTransfer.transfer(guard, workspace, args.path, args.max_bytes);
+      return transferFileResult(workspace, result);
     }
   );
 
@@ -1702,14 +1801,60 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
   registerCodexTool(
     config,
     server,
-    "apply_patch",
+    "batch_edit",
     {
-      title: "Apply Patch",
+      title: "Batch Edit Files",
       description:
-        "Apply one unified diff patch inside the workspace. Paths are validated before applying. Prefer edit for tiny replacements and apply_patch for multi-file diffs.",
+        "Apply multiple exact text replacements across one or more workspace files in one atomic operation. Accepts snake_case and common camelCase aliases.",
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
-        patch: z.string().describe("Unified diff patch to apply. File paths must stay inside the workspace and avoid blocked paths.")
+        edits: z.array(z.object({
+          path: z.string(),
+          old_text: z.string(),
+          new_text: z.string(),
+          replace_all: z.boolean().optional(),
+          expected_replacements: z.number().int().min(1).optional()
+        })).min(1).describe("Ordered exact replacement operations. Later edits see earlier edits in the same file."),
+        atomic: z.boolean().optional().describe("Reserved for compatibility. Batch edits are atomic by default.")
+      },
+      annotations: LOCAL_WRITE_ANNOTATIONS,
+      _meta: {
+        ...toolCardMeta(),
+        "openai/toolInvocation/invoking": "Applying batch edits...",
+        "openai/toolInvocation/invoked": "Batch edits applied"
+      }
+    },
+    async (args) => {
+      const workspace = workspaces.getWorkspace(args.workspace_id);
+      const result = await batchEditTextFiles(config, guard, workspace, args.edits as BatchEditItem[]);
+      const text = [
+        "# Batch Edit Files",
+        "",
+        `Paths: ${result.paths.join(", ")}`,
+        `Replacements: ${result.replacements}`,
+        `Diff stats: +${result.additions} -${result.deletions}`,
+        result.diff ? diffBlock(result.diff) : "No diff output."
+      ].filter(Boolean).join("\n");
+      return textResult(text, {
+        workspace_id: workspace.id,
+        root: workspace.root,
+        ...result
+      });
+    }
+  );
+
+  registerCodexTool(
+    config,
+    server,
+    "apply_patch",
+    {
+      title: "Apply Compatible Patch",
+      description:
+        "Apply a standard Git unified diff or a Codex *** Begin Patch block. Format is auto-detected; multi-file patches are supported.",
+      inputSchema: {
+        workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
+        patch: z.string().describe("Git unified diff or Codex patch text."),
+        patch_format: z.enum(["auto", "git", "codex"]).optional().describe("Patch syntax. Default: auto-detect.")
       },
       annotations: LOCAL_WRITE_ANNOTATIONS,
       _meta: {
@@ -1720,10 +1865,17 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     },
     async (args) => {
       const workspace = workspaces.getWorkspace(args.workspace_id);
-      const result = applyWorkspacePatch(config, guard, workspace, String(args.patch ?? ""));
+      const result = await applyCompatibleWorkspacePatch(
+        config,
+        guard,
+        workspace,
+        String(args.patch ?? ""),
+        (args.patch_format ?? "auto") as PatchFormat
+      );
       const text = [
         "# Apply Patch",
         "",
+        `Format: ${result.format}`,
         `Paths: ${result.paths.join(", ")}`,
         `Diff stats: +${result.additions} -${result.deletions}`,
         result.stderr ? `stderr: ${result.stderr}` : "",
@@ -1733,6 +1885,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
         workspace_id: workspace.id,
         root: workspace.root,
         paths: result.paths,
+        format: result.format,
         stdout: result.stdout,
         stderr: result.stderr,
         additions: result.additions,
@@ -1750,7 +1903,7 @@ export function createCodexProServer(config: CodexProConfig): McpServer {
     {
       title: "Bash",
       description:
-        "Run one allowlisted verification command in the workspace, such as tests, build, lint, typecheck, or a project script. Do not use for git status/diff or file inspection; use show_changes, tree, search, and read instead. Do not chain commands with &&, pipes, redirects, or shell file readers.",
+        `Run one local shell command in the workspace through the configured shell (${config.commandShell}; use --shell cmd/powershell/pwsh for native Windows). Commands are passed through without an allowlist, so chaining, redirection, environment expansion, and diagnostics such as nvidia-smi are available.`,
       inputSchema: {
         workspace_id: z.string().optional().describe("Workspace id from open_workspace. Omit to use default workspace."),
         command: z.string().describe("Command to run."),

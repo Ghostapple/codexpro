@@ -81,6 +81,12 @@ await fs.writeFile(path.join(tmp, 'demo.txt'), 'alpha\nread\nread\nomega\n', 'ut
 await fs.writeFile(path.join(tmp, 'other.txt'), 'keep\n', 'utf8');
 await fs.writeFile(path.join(tmp, 'config.txt'), 'OPENAI_API_KEY=sk-realSecretValue123\n', 'utf8');
 await fs.writeFile(path.join(tmp, 'AGENTS.md'), '# Smoke Agents\n\n- Preserve demo.txt.\n', 'utf8');
+const transferPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZlSIAAAAASUVORK5CYII=', 'base64');
+const transferMp3 = Buffer.from([0xff, 0xfb, 0x90, 0x64, ...new Array(256).fill(0)]);
+const transferMp4 = Buffer.concat([Buffer.from('000000186674797069736f6d0000020069736f6d69736f32', 'hex'), Buffer.alloc(64)]);
+await fs.writeFile(path.join(tmp, 'transfer.png'), transferPng);
+await fs.writeFile(path.join(tmp, 'transfer.mp3'), transferMp3);
+await fs.writeFile(path.join(tmp, 'transfer.mp4'), transferMp4);
 const codexHistoryDir = path.join(tmp, 'codex-history');
 const codexSessionDir = path.join(codexHistoryDir, 'sessions', '2026', '06', '20');
 await fs.mkdir(codexSessionDir, { recursive: true });
@@ -196,7 +202,7 @@ await client.request('initialize', {
 client.notify('notifications/initialized');
 const tools = await client.request('tools/list', {});
 const toolNames = tools.tools.map((tool) => tool.name);
-for (const expected of ['server_config', 'codexpro_self_test', 'codexpro_inventory', 'list_workspaces', 'open_current_workspace', 'open_workspace', 'workspace_snapshot', 'tree', 'search', 'load_skill', 'read', 'write', 'edit', 'apply_patch', 'bash', 'git_status', 'git_diff', 'show_changes', 'read_handoff', 'wait_for_handoff', 'codex_context', 'handoff_to_agent', 'handoff_to_codex', 'export_pro_context']) {
+for (const expected of ['server_config', 'codexpro_self_test', 'codexpro_inventory', 'list_workspaces', 'open_current_workspace', 'open_workspace', 'workspace_snapshot', 'tree', 'search', 'load_skill', 'read', 'transfer_file', 'write', 'edit', 'apply_patch', 'bash', 'git_status', 'git_diff', 'show_changes', 'read_handoff', 'wait_for_handoff', 'codex_context', 'handoff_to_agent', 'handoff_to_codex', 'export_pro_context']) {
   if (!toolNames.includes(expected)) throw new Error(`missing tool: ${expected}`);
 }
 const toolCardUri = 'ui://widget/codexpro-tool-card-v9.html';
@@ -347,6 +353,20 @@ if (openedByPath.structuredContent.workspace_id !== ws) {
   throw new Error(`open_workspace path alias returned ${openedByPath.structuredContent.workspace_id}, expected ${ws}`);
 }
 await client.request('tools/call', { name: 'read', arguments: { workspace_id: ws, path: 'demo.txt' } });
+for (const [file, blockType, source] of [
+  ['transfer.png', 'image', transferPng],
+  ['transfer.mp3', 'audio', transferMp3],
+  ['transfer.mp4', 'resource', transferMp4]
+]) {
+  const transferred = await client.request('tools/call', { name: 'transfer_file', arguments: { workspace_id: ws, path: file } });
+  const block = transferred.content?.find?.((part) => part.type === blockType);
+  if (!block) throw new Error(`transfer_file ${file} did not return ${blockType}: ${JSON.stringify(transferred.structuredContent)}`);
+  const encoded = blockType === 'resource' ? block.resource?.blob : block.data;
+  if (!encoded || !Buffer.from(encoded, 'base64').equals(source)) throw new Error(`transfer_file ${file} payload did not round-trip`);
+  if ('data' in transferred.structuredContent || JSON.stringify(transferred.structuredContent).includes(encoded)) {
+    throw new Error(`transfer_file ${file} duplicated base64 into structuredContent`);
+  }
+}
 await fs.writeFile(path.join(tmp, 'tokens.txt'), [
   'Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz123456',
   'https://example.test/mcp?codexpro_token=verysecretcodexprotoken123&x=1',
@@ -561,7 +581,9 @@ const codexContext = await client.request('tools/call', { name: 'codex_context',
 if (!codexContext.structuredContent.agents_files.includes('AGENTS.md')) throw new Error('codex_context did not include AGENTS.md');
 if (codexContext.structuredContent.agents_files.length !== 1) throw new Error(`codex_context returned duplicate AGENTS files: ${codexContext.structuredContent.agents_files.join(', ')}`);
 if (!codexContext.content?.[0]?.text?.includes('Smoke Agents')) throw new Error('codex_context did not include AGENTS.md content');
-const pwdBash = await client.request('tools/call', { name: 'bash', arguments: { workspace_id: ws, command: 'pwd' } });
+const defaultPwdCommand = process.platform === 'win32' ? 'cd' : 'pwd';
+const defaultEnvCommand = process.platform === 'win32' ? 'echo %USERPROFILE%' : 'ls $HOME';
+const pwdBash = await client.request('tools/call', { name: 'bash', arguments: { workspace_id: ws, command: defaultPwdCommand } });
 const pwdBashText = pwdBash.content?.[0]?.text ?? '';
 if (!pwdBashText.includes('Exit: 0') || pwdBashText.includes('## stdout') || pwdBashText.includes('## stderr')) {
   throw new Error(`default bash transcript should be compact: ${pwdBashText}`);
@@ -569,10 +591,41 @@ if (!pwdBashText.includes('Exit: 0') || pwdBashText.includes('## stdout') || pwd
 if (!pwdBash.structuredContent.stdout?.includes(tmp)) {
   throw new Error(`compact bash transcript dropped structured stdout: ${JSON.stringify(pwdBash.structuredContent)}`);
 }
-await expectToolError('bash', { workspace_id: ws, command: 'find /tmp' }, /blocked/i);
-await expectToolError('bash', { workspace_id: ws, command: 'find . -fprint leaked.txt' }, /blocked/i);
-await expectToolError('bash', { workspace_id: ws, command: 'git show HEAD:.env' }, /blocked/i);
-await expectToolError('bash', { workspace_id: ws, command: 'ls $HOME' }, /blocked/i);
+for (const command of ['find /tmp', 'find . -fprint leaked.txt', 'git show HEAD:.env', defaultEnvCommand]) {
+  const unrestricted = await client.request('tools/call', { name: 'bash', arguments: { workspace_id: ws, command } });
+  if (unrestricted.isError) throw new Error(`unrestricted bash rejected ${command}: ${JSON.stringify(unrestricted)}`);
+}
+if (process.platform === 'win32') {
+  const powershellClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'safe', '--shell', 'powershell'], {
+    initializeParams: {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'codexpro-powershell-smoke', version: '0.1.0' }
+    }
+  });
+  const powershellPwd = await powershellClient.request('tools/call', { name: 'bash', arguments: { command: 'Get-Location' } });
+  if (powershellPwd.structuredContent.exitCode !== 0 || !powershellPwd.structuredContent.stdout?.includes(tmp)) {
+    throw new Error(`powershell shell did not run Get-Location: ${JSON.stringify(powershellPwd.structuredContent)}`);
+  }
+  const powershellEnv = await powershellClient.request('tools/call', { name: 'bash', arguments: { command: 'Write-Output $HOME' } });
+  if (powershellEnv.isError) throw new Error(`powershell shell rejected environment expansion: ${JSON.stringify(powershellEnv)}`);
+  powershellClient.close();
+
+  const cmdClient = new McpStdioClient('node', ['dist/stdio.js', '--root', tmp, '--allow-root', tmp, '--bash', 'safe', '--shell', 'cmd'], {
+    initializeParams: {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'codexpro-cmd-smoke', version: '0.1.0' }
+    }
+  });
+  const cmdPwd = await cmdClient.request('tools/call', { name: 'bash', arguments: { command: 'cd' } });
+  if (cmdPwd.structuredContent.exitCode !== 0 || !cmdPwd.structuredContent.stdout?.toLowerCase().includes(tmp.toLowerCase())) {
+    throw new Error(`cmd shell did not run cd: ${JSON.stringify(cmdPwd.structuredContent)}`);
+  }
+  const cmdEnv = await cmdClient.request('tools/call', { name: 'bash', arguments: { command: 'echo %USERPROFILE%' } });
+  if (cmdEnv.isError) throw new Error(`cmd shell rejected environment expansion: ${JSON.stringify(cmdEnv)}`);
+  cmdClient.close();
+}
 const clientBuild = await client.request('tools/call', { name: 'bash', arguments: { workspace_id: ws, command: 'npm run build:clients', timeout_ms: 60000 } });
 if (!clientBuild.structuredContent.stdout?.includes('clients ok')) {
   throw new Error('safe bash did not run npm run build:clients');
@@ -896,7 +949,7 @@ await fullTranscriptClient.request('initialize', {
   clientInfo: { name: 'codexpro-full-bash-transcript-smoke', version: '0.1.0' }
 });
 fullTranscriptClient.notify('notifications/initialized');
-const fullTranscriptBash = await fullTranscriptClient.request('tools/call', { name: 'bash', arguments: { command: 'pwd' } });
+const fullTranscriptBash = await fullTranscriptClient.request('tools/call', { name: 'bash', arguments: { command: defaultPwdCommand } });
 const fullTranscriptText = fullTranscriptBash.content?.[0]?.text ?? '';
 if (!fullTranscriptText.includes('## stdout') || !fullTranscriptText.includes(tmp)) {
   throw new Error(`full bash transcript mode did not preserve raw stdout in chat text: ${fullTranscriptText}`);
@@ -1028,9 +1081,9 @@ const guardedConfig = await sessionGuardClient.request('tools/call', { name: 'se
 if (guardedConfig.structuredContent.bashSessionId !== 'codex-main' || guardedConfig.structuredContent.requireBashSession !== true) {
   throw new Error(`server_config did not expose bash session guard: ${JSON.stringify(guardedConfig.structuredContent)}`);
 }
-await expectToolError('bash', { command: 'pwd' }, /bash session/i, sessionGuardClient);
-await expectToolError('bash', { command: 'pwd', session_id: 'other-session' }, /codex-main/i, sessionGuardClient);
-const guardedBash = await sessionGuardClient.request('tools/call', { name: 'bash', arguments: { command: 'pwd', session_id: 'codex-main' } });
+await expectToolError('bash', { command: defaultPwdCommand }, /bash session/i, sessionGuardClient);
+await expectToolError('bash', { command: defaultPwdCommand, session_id: 'other-session' }, /codex-main/i, sessionGuardClient);
+const guardedBash = await sessionGuardClient.request('tools/call', { name: 'bash', arguments: { command: defaultPwdCommand, session_id: 'codex-main' } });
 if (guardedBash.structuredContent.bash_session_id !== 'codex-main' || !guardedBash.content?.[0]?.text?.includes('Exit: 0')) {
   throw new Error(`bash session guard did not allow matching session id: ${JSON.stringify(guardedBash.structuredContent)}`);
 }

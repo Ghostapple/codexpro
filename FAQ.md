@@ -269,7 +269,7 @@ https://rebel0789.github.io/codexpro/
 
 CodexPro is a local developer bridge, not an OS sandbox.
 
-Use it with repos you trust. Keep token auth enabled for public tunnels. Keep safe bash on unless you know why you need full bash. Read [SECURITY.md](SECURITY.md) before exposing it through a public tunnel.
+Use it with repos you trust. Keep token auth enabled for public tunnels. Bash commands are unrestricted by the former safe-mode allowlist; use `--no-bash` or the bash-session guard when you need an execution switch. Read [SECURITY.md](SECURITY.md) before exposing it through a public tunnel.
 
 ## Where are saved settings stored?
 

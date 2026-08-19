@@ -319,9 +319,9 @@ codexpro start</code></pre>
             <p><code>.env</code>、私钥、<code>.git</code>、<code>node_modules</code>、生成目录、缓存目录、工作区外路径和 symlink 逃逸会被拒绝。</p>
           </article>
           <article>
-            <small>safe bash</small>
+            <small>full shell</small>
             <h3>验证而不是任意 shell</h3>
-            <p>safe 模式允许常见检查、git、test、lint、typecheck 和 build 命令。只在信任的本地仓库里使用 full bash。</p>
+            <p>bash 会把命令直接交给所选本地 shell，因此可以直接执行 <code>nvidia-smi</code> 等诊断命令。需要关闭或限制执行时使用 <code>--no-bash</code> 或 bash session guard。</p>
           </article>
           <article>
             <small>不突然跑 shell</small>
@@ -404,7 +404,7 @@ codexpro start</code></pre>
         <ul>
           <li>公网 tunnel 默认使用 token 保护。</li>
           <li><code>.env</code>、私钥、<code>.git</code>、<code>node_modules</code> 和 symlink 逃逸默认阻止。</li>
-          <li>safe bash 用于常见检查和测试，不是任意 shell 控制。</li>
+          <li>bash 默认执行所选 shell 命令；可用 <code>--no-bash</code> 或 bash session guard 控制执行入口。</li>
           <li><code>--no-bash</code> 会关闭所有 ChatGPT 触发的 shell 命令。</li>
           <li><code>--bash-session</code> 加 <code>--require-bash-session</code> 会要求 bash 调用显式命中本地会话标签。</li>
           <li><code>--codex-sessions</code> 默认关闭；开启后只读取本地 Codex JSONL 历史，不进入正在运行的 Codex 聊天。</li>

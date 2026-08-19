@@ -1,17 +1,17 @@
 {
-  "name": "codexpro",
-  "version": "0.28.6",
-  "description": "A local MCP/App SDK-style connector that lets ChatGPT inspect, edit, and hand off work to Codex inside a local dev workspace.",
+  "name": "codexprov4",
+  "version": "0.30.0",
+  "description": "CodexProV4 local MCP connector with bounded workspace document reading and binary media transfer.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rebel0789/codexpro.git"
+    "url": "git+https://github.com/Ghostapple/codexpro.git"
   },
   "bugs": {
-    "url": "https://github.com/rebel0789/codexpro/issues"
+    "url": "https://github.com/Ghostapple/codexpro/issues"
   },
-  "homepage": "https://rebel0789.github.io/codexpro/",
+  "homepage": "https://github.com/Ghostapple/codexpro#readme",
   "keywords": [
     "mcp",
     "chatgpt",
@@ -24,7 +24,7 @@
     "tailscale"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.3.0"
   },
   "files": [
     "dist",
@@ -42,16 +42,20 @@
     "CHANGELOG.md",
     "CHATGPT_PROMPT.md",
     "CODEX_PROMPT.md",
+    "AGENTS.md",
     "AGENTS.example.md",
+    "PROJECTS.md",
+    "README_V4.md",
     "config.example.env"
   ],
   "publishConfig": {
     "access": "public"
   },
   "bin": {
-    "codexpro": "scripts/codexpro.mjs",
-    "codexpro-mcp": "dist/stdio.js",
-    "codexpro-mcp-http": "dist/http.js"
+    "codexprov4": "scripts/codexpro.mjs",
+    "codexprov4-mcp": "dist/stdio.js",
+    "codexprov4-mcp-http": "dist/http.js",
+    "codexpro": "scripts/codexpro.mjs"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -61,7 +65,9 @@
     "start:http": "node dist/http.js",
     "dev:stdio": "tsx src/stdio.ts",
     "dev:http": "tsx src/http.ts",
-    "smoke": "node scripts/smoke.mjs && node scripts/http-smoke.mjs && node scripts/pro-smoke.mjs && node scripts/doctor-smoke.mjs && node scripts/settings-smoke.mjs && node scripts/execute-handoff-smoke.mjs",
+    "smoke:file-content": "node scripts/file-content-smoke.mjs",
+    "smoke:remote": "node scripts/remote-smoke.mjs",
+    "smoke": "node scripts/file-content-smoke.mjs && node scripts/smoke.mjs && node scripts/http-smoke.mjs && node scripts/pro-smoke.mjs && node scripts/doctor-smoke.mjs && node scripts/settings-smoke.mjs && node scripts/execute-handoff-smoke.mjs",
     "stress": "npm run build && node scripts/stress.mjs",
     "doctor": "node scripts/codexpro.mjs doctor",
     "connect": "node scripts/codexpro.mjs",
@@ -73,19 +79,24 @@
     "connect:ngrok": "node scripts/codexpro.mjs ngrok",
     "connect:tailscale": "node scripts/codexpro.mjs tailscale",
     "pro:bundle": "node scripts/pro-bundle.mjs",
-    "pro:apply": "node scripts/pro-apply.mjs"
+    "pro:apply": "node scripts/pro-apply.mjs",
+    "smoke:v2": "npm run build && node scripts/v2-smoke.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.4",
     "cors": "^2.8.5",
     "express": "^5.1.0",
+    "file-type": "^22.0.2",
+    "mammoth": "^1.12.1",
     "minimatch": "^10.0.1",
+    "pdf-parse": "^2.4.5",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/node": "^24.0.0",
+    "jszip": "^3.10.1",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"
   }

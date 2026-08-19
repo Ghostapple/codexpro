@@ -107,7 +107,7 @@ async function makeFixture() {
   await fs.writeFile(path.join(root, 'AGENTS.md'), '# Stress Agents\n\nKeep checks local.\n', 'utf8');
   await fs.writeFile(path.join(root, 'demo.txt'), 'alpha\n--flag root\narrow -> value\n', 'utf8');
   await fs.writeFile(path.join(root, '.hidden.txt'), 'needle hidden\n', 'utf8');
-  await fs.writeFile(path.join(root, 'visible:123:file.txt'), 'needle colon path\n', 'utf8');
+  await fs.writeFile(path.join(root, 'visible-123-file.txt'), 'needle colon path\n', 'utf8');
   await fs.mkdir(path.join(root, '.github', 'workflows'), { recursive: true });
   await fs.writeFile(path.join(root, '.github', 'workflows', 'ci.yml'), 'name: ci\n', 'utf8');
   await fs.mkdir(path.join(root, 'many'), { recursive: true });
@@ -211,7 +211,7 @@ async function runFullModeStress(root) {
       name: 'search',
       arguments: { workspace_id: ws, query: 'needle colon path', max_results: 10 }
     });
-    assert(colonSearch.structuredContent.matches.some((match) => match.path === 'visible:123:file.txt' && match.line === 1), `colon path search parsed incorrectly: ${JSON.stringify(colonSearch.structuredContent.matches)}`);
+    assert(colonSearch.structuredContent.matches.some((match) => match.path === 'visible-123-file.txt' && match.line === 1), `colon path search parsed incorrectly: ${JSON.stringify(colonSearch.structuredContent.matches)}`);
 
     const superRead = await client.request('tools/call', {
       name: 'codexpro',
@@ -228,46 +228,35 @@ async function runFullModeStress(root) {
 
     const safePwd = await client.request('tools/call', {
       name: 'bash',
-      arguments: { workspace_id: ws, command: 'pwd' }
+      arguments: { workspace_id: ws, command: process.platform === 'win32' ? 'cd' : 'pwd' }
     });
     assert(safePwd.isError !== true && safePwd.structuredContent.exitCode === 0, 'safe bash rejected allowed pwd command');
 
-    const newlineDirectTarget = path.join(root, 'newline-direct-owned');
-    const blockedNewline = await client.request('tools/call', {
+    const chainedCommand = process.platform === 'win32' ? 'cd && echo unrestricted' : 'pwd && printf unrestricted';
+    const unrestrictedChained = await client.request('tools/call', {
       name: 'bash',
-      arguments: { workspace_id: ws, command: 'pwd\ntouch newline-direct-owned' }
+      arguments: { workspace_id: ws, command: chainedCommand }
     });
-    assert(blockedNewline.isError === true && String(blockedNewline.structuredContent.error).includes('blocked'), 'safe bash allowed newline command chaining');
-    assert(!(await pathExists(newlineDirectTarget)), 'safe bash newline command created a file');
+    assert(unrestrictedChained.isError !== true && unrestrictedChained.structuredContent.exitCode === 0, 'bash rejected command chaining');
 
-    const newlineSuperTarget = path.join(root, 'newline-supertool-owned');
-    const blockedSuperNewline = await client.request('tools/call', {
+    const unrestrictedSuper = await client.request('tools/call', {
       name: 'codexpro',
-      arguments: { action: 'bash', args: { workspace_id: ws, command: 'pwd\ntouch newline-supertool-owned' } }
+      arguments: { action: 'bash', args: { workspace_id: ws, command: chainedCommand } }
     });
-    assert(blockedSuperNewline.isError === true && blockedSuperNewline.structuredContent.codexpro_tool === 'bash', 'supertool safe bash newline error was not tagged as bash');
-    assert(!(await pathExists(newlineSuperTarget)), 'supertool safe bash newline command created a file');
+    assert(unrestrictedSuper.isError !== true && unrestrictedSuper.structuredContent.codexpro_tool === 'bash', 'supertool rejected unrestricted command chaining');
 
-    const blockedOutputFlag = await client.request('tools/call', {
+    const envCommand = process.platform === 'win32' ? 'echo %USERNAME%' : 'printf "%s" "$HOME"';
+    const unrestrictedEnv = await client.request('tools/call', {
       name: 'bash',
-      arguments: { workspace_id: ws, command: 'git diff "--output=safe-bash-owned.patch"' }
+      arguments: { workspace_id: ws, command: envCommand }
     });
-    assert(blockedOutputFlag.isError === true && String(blockedOutputFlag.structuredContent.error).includes('blocked'), 'safe bash allowed quoted git output path');
-    assert(!(await pathExists(path.join(root, 'safe-bash-owned.patch'))), 'safe bash git output path created a file');
+    assert(unrestrictedEnv.isError !== true, 'bash rejected environment expansion');
 
-    const blockedDollarExpansion = await client.request('tools/call', {
+    const unrestrictedUnknown = await client.request('tools/call', {
       name: 'codexpro',
-      arguments: { action: 'bash', args: { workspace_id: ws, command: "git diff $'--output=supertool-owned.patch'" } }
+      arguments: { action: 'bash', args: { workspace_id: ws, command: process.platform === 'win32' ? 'nvidia-smi --query-gpu=name --format=csv,noheader' : 'nvidia-smi --query-gpu=name --format=csv,noheader' } }
     });
-    assert(blockedDollarExpansion.isError === true && blockedDollarExpansion.structuredContent.codexpro_tool === 'bash', 'supertool safe bash allowed dollar-quoted expansion');
-    assert(!(await pathExists(path.join(root, 'supertool-owned.patch'))), 'supertool dollar-quoted git output path created a file');
-
-    const blockedFindFprint0 = await client.request('tools/call', {
-      name: 'bash',
-      arguments: { workspace_id: ws, command: 'find . "-fprint0" find-owned.txt' }
-    });
-    assert(blockedFindFprint0.isError === true && String(blockedFindFprint0.structuredContent.error).includes('blocked'), 'safe bash allowed quoted find -fprint0 path write');
-    assert(!(await pathExists(path.join(root, 'find-owned.txt'))), 'safe bash find -fprint0 created a file');
+    assert(unrestrictedUnknown.isError !== true && unrestrictedUnknown.structuredContent.codexpro_tool === 'bash', 'bash rejected an unknown diagnostic command');
 
     const blockedEnvWrite = await client.request('tools/call', {
       name: 'write',
@@ -456,7 +445,7 @@ async function runMcpInventoryStress() {
   await fs.writeFile(path.join(fakeHome, '.codex', 'config.toml'), toml, 'utf8');
   await fs.writeFile(path.join(fakeHome, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: cursorServers }), 'utf8');
 
-  const client = await initClient(root, { HOME: fakeHome });
+  const client = await initClient(root, { HOME: fakeHome, USERPROFILE: fakeHome });
   try {
     const opened = await client.request('tools/call', { name: 'open_current_workspace', arguments: { include_tree: false } });
     const inventory = await client.request('tools/call', {

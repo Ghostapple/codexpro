@@ -253,7 +253,7 @@ CodexPro 使用 ChatGPT 的官方 Developer Mode / MCP App 接入路径，让你
 
 CodexPro 是本地开发桥，不是操作系统级沙箱。
 
-只在你信任的仓库里使用。公网 tunnel 保持 token auth 开启。保持 safe bash，除非你明确知道为什么需要 full bash。公网暴露前先读 [SECURITY.md](SECURITY.md)。
+只在你信任的仓库里使用。公网 tunnel 保持 token auth 开启。bash 不再受原 safe 模式命令白名单限制；需要关闭执行时使用 `--no-bash` 或 bash session guard。公网暴露前先读 [SECURITY.md](SECURITY.md)。
 
 ## 保存的设置在哪里？
 

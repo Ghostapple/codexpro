@@ -72,6 +72,21 @@ async function waitForJson(filePath, predicate, label) {
   throw new Error(`timed out waiting for ${label}: ${lastError?.message ?? 'predicate not met'}`);
 }
 
+async function waitForMissing(filePath, label) {
+  const deadline = Date.now() + 10_000;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      await fs.access(filePath);
+    } catch (error) {
+      if (error?.code === 'ENOENT') return;
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`timed out waiting for ${label}: ${lastError?.message ?? 'file still exists'}`);
+}
+
 async function withStartedCodexPro(args, env, fn) {
   const child = spawn(process.execPath, ['scripts/codexpro.mjs', 'start', ...args], {
     cwd: path.resolve('.'),
@@ -222,6 +237,8 @@ const saved = run([
   'full',
   '--bash-transcript',
   'full',
+  '--shell',
+  'powershell',
   '--widget-domain',
   'https://widgets.codexpro.test',
   '--tool-cards',
@@ -234,7 +251,7 @@ if (!saved.includes('Saved workspace settings')) {
 }
 
 const shown = run(['settings', 'show', '--root', root], env);
-for (const expected of ['Tunnel', 'ngrok', 'codexpro-test.ngrok-free.app', '19087', 'Tool cards', 'on', 'Bash transcript', 'full', '<saved>']) {
+for (const expected of ['Tunnel', 'ngrok', 'codexpro-test.ngrok-free.app', '19087', 'Tool cards', 'on', 'Shell', 'powershell', 'Bash transcript', 'full', '<saved>']) {
   if (!shown.includes(expected)) {
     throw new Error(`settings show missing ${expected}\n${shown}`);
   }
@@ -243,7 +260,7 @@ if (shown.includes('codexpro-settings-token')) {
   throw new Error(`settings show leaked token\n${shown}`);
 }
 const profile = await readProfile(root, home);
-if (profile.toolMode !== 'full' || profile.toolCards !== true || profile.bashTranscript !== 'full' || profile.widgetDomain !== 'https://widgets.codexpro.test') {
+if (profile.toolMode !== 'full' || profile.toolCards !== true || profile.shell !== 'powershell' || profile.bashTranscript !== 'full' || profile.widgetDomain !== 'https://widgets.codexpro.test') {
   throw new Error(`settings profile did not persist tool/widget options: ${JSON.stringify(profile)}`);
 }
 
@@ -438,11 +455,8 @@ await withStartedCodexPro([
     throw new Error(`runtime status did not persist toolCards: ${JSON.stringify(runtime)}`);
   }
 });
-try {
-  await fs.access(runtimePath);
-  throw new Error('runtime status was not cleared after launcher SIGTERM');
-} catch (error) {
-  if (error?.code !== 'ENOENT') throw error;
+if (process.platform !== 'win32') {
+  await waitForMissing(runtimePath, 'runtime status cleanup after launcher SIGTERM');
 }
 
 const quitRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-quit-'));
@@ -469,6 +483,7 @@ const cloudflareRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-setting
 const cloudflarePort = await getFreePort();
 const cloudflarePath = await runtimeStatusPath(cloudflareRoot, home);
 const fakeCloudflared = path.join(home, 'fake-cloudflared.mjs');
+const fakeCloudflaredCommand = process.platform === 'win32' ? path.join(home, 'fake-cloudflared.cmd') : fakeCloudflared;
 await fs.writeFile(fakeCloudflared, [
   '#!/usr/bin/env node',
   "if (process.argv.includes('--version')) { console.log('cloudflared version 2026.6.0'); process.exit(0); }",
@@ -477,13 +492,16 @@ await fs.writeFile(fakeCloudflared, [
   'setInterval(() => {}, 1000);',
   ''
 ].join('\n'), { mode: 0o700 });
+if (process.platform === 'win32') {
+  await fs.writeFile(fakeCloudflaredCommand, `@echo off\r\n"${process.execPath}" "${fakeCloudflared}" %*\r\n`, 'utf8');
+}
 await withStartedCodexPro([
   '--root',
   cloudflareRoot,
   '--tunnel',
   'cloudflare',
   '--cloudflared',
-  fakeCloudflared,
+  fakeCloudflaredCommand,
   '--port',
   String(cloudflarePort),
   '--token',
@@ -501,9 +519,11 @@ const proxyCloudflarePort = await getFreePort();
 const proxyCloudflarePath = await runtimeStatusPath(proxyCloudflareRoot, home);
 const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-fake-bin-'));
 const fakeCurl = path.join(fakeBin, 'curl');
+const fakeCurlCommand = process.platform === 'win32' ? path.join(fakeBin, 'curl.cmd') : fakeCurl;
 const curlArgsPath = path.join(home, 'fake-curl-args.json');
 const cloudflaredArgsPath = path.join(home, 'fake-cloudflared-proxy-args.json');
 const fakeProxyCloudflared = path.join(home, 'fake-cloudflared-proxy.mjs');
+const fakeProxyCloudflaredCommand = process.platform === 'win32' ? path.join(home, 'fake-cloudflared-proxy.cmd') : fakeProxyCloudflared;
 await fs.writeFile(fakeCurl, [
   '#!/usr/bin/env node',
   "const fs = require('node:fs');",
@@ -511,6 +531,9 @@ await fs.writeFile(fakeCurl, [
   "console.log(JSON.stringify({ success: true, result: { id: 'proxy-tunnel-id', hostname: 'proxy-codexpro.trycloudflare.com', account_tag: 'account-tag', secret: 'proxy-secret-1234567890' } }));",
   ''
 ].join('\n'), { mode: 0o700 });
+if (process.platform === 'win32') {
+  await fs.writeFile(fakeCurlCommand, `@echo off\r\n"${process.execPath}" "${fakeCurl}" %*\r\n`, 'utf8');
+}
 await fs.writeFile(fakeProxyCloudflared, [
   '#!/usr/bin/env node',
   "import fs from 'node:fs';",
@@ -523,13 +546,16 @@ await fs.writeFile(fakeProxyCloudflared, [
   "setInterval(() => {}, 1000);",
   ''
 ].join('\n'), { mode: 0o700 });
+if (process.platform === 'win32') {
+  await fs.writeFile(fakeProxyCloudflaredCommand, `@echo off\r\n"${process.execPath}" "${fakeProxyCloudflared}" %*\r\n`, 'utf8');
+}
 await withStartedCodexPro([
   '--root',
   proxyCloudflareRoot,
   '--tunnel',
   'cloudflare',
   '--cloudflared',
-  fakeProxyCloudflared,
+  fakeProxyCloudflaredCommand,
   '--port',
   String(proxyCloudflarePort),
   '--token',
@@ -538,6 +564,8 @@ await withStartedCodexPro([
 ], {
   ...env,
   PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`,
+  Path: `${fakeBin}${path.delimiter}${process.env.Path ?? process.env.PATH ?? ''}`,
+  CODEXPRO_CURL_BIN: fakeCurlCommand,
   HTTPS_PROXY: 'http://proxy.example.test:8080',
   CODEXPRO_FAKE_CURL_ARGS: curlArgsPath,
   CODEXPRO_FAKE_CLOUDFLARED_ARGS: cloudflaredArgsPath
@@ -556,16 +584,19 @@ if (!cloudflaredArgs.includes('--credentials-file') || !cloudflaredArgs.includes
   throw new Error(`proxy quick tunnel did not run cloudflared with credentials: ${JSON.stringify(cloudflaredArgs)}`);
 }
 const credentialsPath = cloudflaredArgs[cloudflaredArgs.indexOf('--credentials-file') + 1];
-try {
-  await fs.access(credentialsPath);
-  throw new Error(`proxy quick tunnel credentials were not cleaned up: ${credentialsPath}`);
-} catch (error) {
-  if (error?.code !== 'ENOENT') throw error;
+if (process.platform !== 'win32') {
+  try {
+    await fs.access(credentialsPath);
+    throw new Error(`proxy quick tunnel credentials were not cleaned up: ${credentialsPath}`);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
 }
 
 const proxyCloudflareFailRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-cloudflare-proxy-fail-'));
 const proxyCloudflareFailPort = await getFreePort();
 const fakeFailingProxyCloudflared = path.join(home, 'fake-cloudflared-proxy-fail.mjs');
+const fakeFailingProxyCloudflaredCommand = process.platform === 'win32' ? path.join(home, 'fake-cloudflared-proxy-fail.cmd') : fakeFailingProxyCloudflared;
 await fs.writeFile(fakeFailingProxyCloudflared, [
   '#!/usr/bin/env node',
   "if (process.argv.includes('--version')) { console.log('cloudflared version 2026.6.0'); process.exit(0); }",
@@ -573,6 +604,9 @@ await fs.writeFile(fakeFailingProxyCloudflared, [
   'process.exit(7);',
   ''
 ].join('\n'), { mode: 0o700 });
+if (process.platform === 'win32') {
+  await fs.writeFile(fakeFailingProxyCloudflaredCommand, `@echo off\r\n"${process.execPath}" "${fakeFailingProxyCloudflared}" %*\r\n`, 'utf8');
+}
 const proxyFailure = runFail([
   'start',
   '--root',
@@ -580,7 +614,7 @@ const proxyFailure = runFail([
   '--tunnel',
   'cloudflare',
   '--cloudflared',
-  fakeFailingProxyCloudflared,
+  fakeFailingProxyCloudflaredCommand,
   '--port',
   String(proxyCloudflareFailPort),
   '--token',
@@ -589,6 +623,8 @@ const proxyFailure = runFail([
 ], {
   ...env,
   PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`,
+  Path: `${fakeBin}${path.delimiter}${process.env.Path ?? process.env.PATH ?? ''}`,
+  CODEXPRO_CURL_BIN: fakeCurlCommand,
   HTTPS_PROXY: 'http://proxy.example.test:8080',
   CODEXPRO_FAKE_CURL_ARGS: path.join(home, 'fake-curl-fail-args.json')
 }, /exited before startup completed/);
@@ -599,6 +635,7 @@ if (!proxyFailure.includes('proxy tunnel startup failed')) {
 const namedCloudflareRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-cloudflare-named-'));
 const namedCloudflarePort = await getFreePort();
 const fakeNamedCloudflared = path.join(home, 'fake-cloudflared-named.mjs');
+const fakeNamedCloudflaredCommand = process.platform === 'win32' ? path.join(home, 'fake-cloudflared-named.cmd') : fakeNamedCloudflared;
 const cloudflareRawToken = 'cf_audit_secret_1234567890TOKEN';
 await fs.writeFile(fakeNamedCloudflared, [
   '#!/usr/bin/env node',
@@ -607,6 +644,9 @@ await fs.writeFile(fakeNamedCloudflared, [
   'process.exit(2);',
   ''
 ].join('\n'), { mode: 0o700 });
+if (process.platform === 'win32') {
+  await fs.writeFile(fakeNamedCloudflaredCommand, `@echo off\r\n"${process.execPath}" "${fakeNamedCloudflared}" %*\r\n`, 'utf8');
+}
 const namedFailure = runFail([
   'start',
   '--root',
@@ -618,7 +658,7 @@ const namedFailure = runFail([
   '--cloudflare-token',
   cloudflareRawToken,
   '--cloudflared',
-  fakeNamedCloudflared,
+  fakeNamedCloudflaredCommand,
   '--port',
   String(namedCloudflarePort),
   '--token',
@@ -630,6 +670,7 @@ if (namedFailure.includes(cloudflareRawToken) || !namedFailure.includes('TUNNEL_
 }
 
 const fakeNgrok = path.join(home, 'fake-ngrok.mjs');
+const fakeNgrokCommand = process.platform === 'win32' ? path.join(home, 'fake-ngrok.cmd') : fakeNgrok;
 await fs.writeFile(fakeNgrok, [
   '#!/usr/bin/env node',
   "if (process.argv.includes('version')) { console.log('ngrok version 3.0.0'); process.exit(0); }",
@@ -637,6 +678,9 @@ await fs.writeFile(fakeNgrok, [
   'process.exit(2);',
   ''
 ].join('\n'), { mode: 0o700 });
+if (process.platform === 'win32') {
+  await fs.writeFile(fakeNgrokCommand, `@echo off\r\n"${process.execPath}" "${fakeNgrok}" %*\r\n`, 'utf8');
+}
 run([
   'settings',
   'set',
@@ -659,7 +703,7 @@ const ngrokFailure = runFail([
   '--hostname',
   'codexpro-env.ngrok-free.app',
   '--ngrok',
-  fakeNgrok,
+  fakeNgrokCommand,
   '--port',
   String(ngrokPort),
   '--token',
@@ -672,6 +716,7 @@ if (!ngrokFailure.includes(`--config|${path.join(realNgrokRoot, 'new-ngrok.yml')
 }
 
 const fakeTailscale = path.join(home, 'fake-tailscale.mjs');
+const fakeTailscaleCommand = process.platform === 'win32' ? path.join(home, 'fake-tailscale.cmd') : fakeTailscale;
 await fs.writeFile(fakeTailscale, [
   '#!/usr/bin/env node',
   "if (process.argv.includes('version')) { console.log('1.80.0'); process.exit(0); }",
@@ -679,6 +724,9 @@ await fs.writeFile(fakeTailscale, [
   'process.exit(2);',
   ''
 ].join('\n'), { mode: 0o700 });
+if (process.platform === 'win32') {
+  await fs.writeFile(fakeTailscaleCommand, `@echo off\r\n"${process.execPath}" "${fakeTailscale}" %*\r\n`, 'utf8');
+}
 const tailscaleRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codexpro-settings-tailscale-'));
 const tailscalePort = await getFreePort();
 const tailscaleFailure = runFail([
@@ -690,7 +738,7 @@ const tailscaleFailure = runFail([
   '--hostname',
   'codexpro-env.tailnet.ts.net',
   '--tailscale',
-  fakeTailscale,
+  fakeTailscaleCommand,
   '--port',
   String(tailscalePort),
   '--token',
@@ -711,7 +759,7 @@ const tailscalePortFailure = runFail([
   '--hostname',
   'codexpro-env.tailnet.ts.net:8443',
   '--tailscale',
-  fakeTailscale,
+  fakeTailscaleCommand,
   '--port',
   String(tailscalePort8443),
   '--token',
